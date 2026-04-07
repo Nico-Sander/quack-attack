@@ -17,7 +17,6 @@ class DetectLaneNode:
     def __init__(self, node_name):
         # initialize the ROS node
         rospy.init_node(node_name)
-        print(f"Current working directory: {os.getcwd()}")
         
         # Initialize default parameter values
         self.init_default_params()
@@ -28,9 +27,7 @@ class DetectLaneNode:
         
         self._vehicle_name = os.environ['VEHICLE_NAME']
         self._camera_topic = f"/{self._vehicle_name}/camera_node/image/compressed"
-
         self.sub_image_original = rospy.Subscriber(self._camera_topic, CompressedImage, self.cbFindLane, queue_size = 1)
-        
         self.pub_lane = rospy.Publisher(f'/{self._vehicle_name}/detect/lane', Float64, queue_size = 1)
 
         self._crop_im_size = 1000
@@ -38,11 +35,9 @@ class DetectLaneNode:
         self.counter = 0
 
         # init debug channels 
-        self.pub_debug_lane = rospy.Publisher(f'/{self._vehicle_name}/debug/lane',CompressedImage,queue_size=1)
-
-        self.pub_debug_white = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_white',CompressedImage,queue_size=1)
-
-        self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow',CompressedImage,queue_size=1)
+        self.pub_debug_lane = rospy.Publisher(f'/{self._vehicle_name}/debug/lane/image/compressed',CompressedImage,queue_size=1)
+        self.pub_debug_white = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_white/image/compressed',CompressedImage,queue_size=1)
+        self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow/image/compressed',CompressedImage,queue_size=1)
 
 
     def init_default_params(self):

@@ -11,92 +11,61 @@ import yaml
 class ControlLaneNode:
     def __init__(self,node_name):
         rospy.init_node(node_name)
-        self.enable = False
+        self.enable = True
+
         self._vehicle_name = os.environ['VEHICLE_NAME']
         twist_topic = f"/{self._vehicle_name}/car_cmd_switch_node/cmd"
         self.pub_cmd_vel = rospy.Publisher(twist_topic, Twist2DStamped, queue_size = 1)
 
-        self.sub_lane = rospy.Subscriber(f'/{self._vehicle_name}/detect/lane', Float64, self.cbFollowLane, queue_size = 1)
+        detect_lane_topic = f"/{self._vehicle_name}/detect/lane"
+        self.sub_lane = rospy.Subscriber(detect_lane_topic, Float64, self.cbFollowLane, queue_size = 1)
 
-        self.sub_control = rospy.Subscriber(f"/{self._vehicle_name}/switch/control", Int32, self.cbControl , queue_size = 1)
-        self.lastError = 0
-
-        self.load_conf('/catkin_ws/src/follow_lane/config/detect_lane.yaml')
+        control_change_topic = f"/{self._vehicle_name}/switch/control"
+        self.sub_control = rospy.Subscriber(control_change_topic, Int32, self.cbControl , queue_size = 1)
+        
+        self.load_conf('/home/ubuntu/DuckieRace_2026/src/packages/follow_lane/config/detect_lane.yaml')
         self.sub_config = rospy.Subscriber(f"/{self._vehicle_name}/conf", String, self.cbUpdateConf, queue_size = 1)
         
+        self.lastError = 0
         self.v = 0
         self.a = 0
         rospy.on_shutdown(self.fnShutDown)
 
+
     def cbControl(self,msg):
-        #if msg.data == ControlType.Lane.value:
+        if msg.data == ControlType.Lane.value:
             self.enable = True
         
-        #else:
-        #    self.enable = False
+        else:
+            self.enable = False
 
     def cbFollowLane(self, desired_center):
 
         print(f'received message. enabled : {self.enable}')
 
-        #if not self.enable:
-        #    return        
+        if not self.enable:
+            return        
         
         center = desired_center.data
         self.followLane(center)
 
-    def followLane_not_working(self, center):
-        # Write your code for a PID controller here
-        error = (center - 500) / 100
-
-        v = 0.2
-        a = 0.01 * error
-        
-        twist = Twist2DStamped(v=v, omega=a)
-        print(f'moving {v} {a} error {error}')
-        self.pub_cmd_vel.publish(twist)
-
+    
     # error between 1 and -1
     def followLane(self, error):
         error = -error
 
-        
-        
-        #error = center - 50
-
-        #Kp = 0.0025
-        #Kd = 0.007
-
-        Kp = self.kp  #0.0125 * 2
-        Kd = self.kd  #0.035 * 2
+        Kp = self.kp
+        Kd = self.kd
 
         print(f'error {error}')
 
         a = -(Kp * error + Kd * (error - self.lastError) )
-
-        #if a < -0.99:
-        #    a = -0.99
-
-        #if a > 0.99:
-        #    a = 0.99
-
         self.lastError = error
         
         # twist.linear.x = 0.05        
         v = min(self.MAX_VEL*100 * ((1 - abs(error)) ** 2), self.MAX_VEL)
         self.v = v
-        self.a = a
-
-        #v = max(v,0.1)
-        
-
-
-        #if self.MAX_VEL == 0:
-        #    twist = Twist2DStamped(v=0, omega=0)
-        #    self.pub_cmd_vel.publish(twist)
-        #    return
-        #else:
-                
+        self.a = a                
         
 
     def fnShutDown(self):
@@ -123,20 +92,17 @@ class ControlLaneNode:
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            
             twist = Twist2DStamped()
             print(f'{rospy.Time.now()} \n\n {rospy.get_time()}')
             twist.header.stamp = rospy.Time.now()
-            #twist.header.seq = self.seq_counter
-            #self.seq_counter += 1
-
+            
             twist.v = self.v
             twist.omega = self.a
 
-            print(f'type: {type(self.pub_cmd_vel)}')
-            print(f'topic: {self.pub_cmd_vel.name}')
-            print(f'message type: {self.pub_cmd_vel.data_class} actualy type{type(twist)}')
-            print(f'message was: {twist}')
+            #print(f'type: {type(self.pub_cmd_vel)}')
+            #print(f'topic: {self.pub_cmd_vel.name}')
+            #print(f'message type: {self.pub_cmd_vel.data_class} actualy type{type(twist)}')
+            #print(f'message was: {twist}')
             self.pub_cmd_vel.publish(twist)
 
             rate.sleep()
