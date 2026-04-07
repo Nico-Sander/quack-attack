@@ -1,0 +1,9 @@
+#!/bin/bash
+source /opt/ros/noetic/setup.bash
+source /catkin_ws/devel/setup.bash
+
+rosrun follow_lane detect_lane_node.py &
+sleep 5
+
+rosrun follow_lane control_lane_node.py &
+wait
