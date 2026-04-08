@@ -2,11 +2,7 @@
 
 ## Setup Virtual Box with ros noetic
 
-```
-sudo apt install ros-noetic-image-transport-plugins
-```
-
-## Setuo workspace
+TODO
 
 ## Launch Ros nodes
 
