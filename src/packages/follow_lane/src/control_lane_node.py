@@ -5,13 +5,18 @@ from std_msgs.msg import Float64, Int32, String
 
 from duckietown_msgs.msg import Twist2DStamped
 import os
-#from switch_control_node import ControlType
+from switch_control_node import ControlType
+from dynamic_reconfigure.server import Server
+from follow_lane.cfg import ControlLaneConfig
 import yaml
 
 class ControlLaneNode:
     def __init__(self,node_name):
         rospy.init_node(node_name)
         self.enable = True
+
+        # Setup dynamic reconfigure server
+        self.srv = Server(ControlLaneConfig, self.reconfigure_callback)
 
         self._vehicle_name = os.environ['VEHICLE_NAME']
         twist_topic = f"/{self._vehicle_name}/car_cmd_switch_node/cmd"
@@ -23,13 +28,23 @@ class ControlLaneNode:
         control_change_topic = f"/{self._vehicle_name}/switch/control"
         self.sub_control = rospy.Subscriber(control_change_topic, Int32, self.cbControl , queue_size = 1)
         
-        self.load_conf('/home/ubuntu/DuckieRace_2026/src/packages/follow_lane/config/detect_lane.yaml')
-        self.sub_config = rospy.Subscriber(f"/{self._vehicle_name}/conf", String, self.cbUpdateConf, queue_size = 1)
+        #self.load_conf('/home/ubuntu/DuckieRace_2026/src/packages/follow_lane/config/detect_lane.yaml')
+        #self.sub_config = rospy.Subscriber(f"/{self._vehicle_name}/conf", String, self.cbUpdateConf, queue_size = 1)
         
         self.lastError = 0
         self.v = 0
         self.a = 0
         rospy.on_shutdown(self.fnShutDown)
+
+    def reconfigure_callback(self, config, level):
+        """Dynamic reconfigure callback"""
+        print(f"Reconfigure Request: {config}")
+        # Update white line parameters
+        self.kp = config.p
+        self.ki = config.i
+        self.kd = config.d
+        self.MAX_VEL = config.max_vel
+        return config
 
 
     def cbControl(self,msg):
@@ -102,6 +117,8 @@ class ControlLaneNode:
             #print(f'type: {type(self.pub_cmd_vel)}')
             #print(f'topic: {self.pub_cmd_vel.name}')
             #print(f'message type: {self.pub_cmd_vel.data_class} actualy type{type(twist)}')
+            #print(f'max Vel: {self.MAX_VEL}')
+            #print(f'pid {self.kp}, {self.ki}, {self.kd}')
             #print(f'message was: {twist}')
             self.pub_cmd_vel.publish(twist)
 

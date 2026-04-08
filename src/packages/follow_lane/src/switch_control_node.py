@@ -5,15 +5,15 @@ from std_msgs.msg import Float64, Int32
 from enum import Enum
 
 import os
-from duckietown.dtros import DTROS, NodeType
 
 class ControlType(Enum):
     Lane = 1
     Obstacle = 2
 
-class SwitchControlNode(DTROS):
+class SwitchControlNode:
     def __init__(self,node_name):
-        super(SwitchControlNode, self).__init__(node_name=node_name, node_type=NodeType.GENERIC)
+        rospy.init_node(node_name)
+        #super(SwitchControlNode, self).__init__(node_name=node_name, node_type=NodeType.GENERIC)
         
 
         self._vehicle_name = os.environ['VEHICLE_NAME']

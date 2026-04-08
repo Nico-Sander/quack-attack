@@ -18,9 +18,6 @@ class DetectLaneNode:
         # initialize the ROS node
         rospy.init_node(node_name)
         
-        # Initialize default parameter values
-        self.init_default_params()
-        
         # Setup dynamic reconfigure server
         self.srv = Server(DetectLaneConfig, self.reconfigure_callback)
 
@@ -40,42 +37,6 @@ class DetectLaneNode:
         self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow/image/compressed',CompressedImage,queue_size=1)
 
 
-    def init_default_params(self):
-        """Initialize default parameter values"""
-        # White line HSV thresholds
-        self.hue_white_l = 0
-        self.hue_white_h = 255
-        self.saturation_white_l = 0
-        self.saturation_white_h = 41
-        self.lightness_white_l = 161
-        self.lightness_white_h = 255
-        
-        # Yellow line HSV thresholds
-        self.hue_yellow_l = 15
-        self.hue_yellow_h = 60
-        self.saturation_yellow_l = 60
-        self.saturation_yellow_h = 255
-        self.lightness_yellow_l = 120
-        self.lightness_yellow_h = 255
-        
-        # Duck detection HSV thresholds
-        self.hue_duck_l = 0
-        self.hue_duck_h = 21
-        self.saturation_duck_l = 220
-        self.saturation_duck_h = 255
-        self.lightness_duck_l = 200
-        self.lightness_duck_h = 255
-        
-        # Perspective transform points
-        self.top_left_x = 159
-        self.top_left_y = 218
-        self.top_right_x = 441
-        self.top_right_y = 218
-        self.bottom_left_x = 606
-        self.bottom_left_y = 382
-        self.bottom_right_x = -29
-        self.bottom_right_y = 382
-
     def reconfigure_callback(self, config, level):
         """Dynamic reconfigure callback"""
         print(f"Reconfigure Request: {config}")
@@ -94,14 +55,6 @@ class DetectLaneNode:
         self.saturation_yellow_h = config.yellow_sh
         self.lightness_yellow_l = config.yellow_vl
         self.lightness_yellow_h = config.yellow_vh
-        
-        # Update duck detection parameters
-        self.hue_duck_l = config.duck_hl
-        self.hue_duck_h = config.duck_hh
-        self.saturation_duck_l = config.duck_sl
-        self.saturation_duck_h = config.duck_sh
-        self.lightness_duck_l = config.duck_vl
-        self.lightness_duck_h = config.duck_vh
         
         # Update perspective transform points
         self.top_left_x = config.top_left_x
