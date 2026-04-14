@@ -110,8 +110,6 @@ class DetectLaneNode:
         if self.counter  <= 3:
             self.counter += 1   
             return
-        else:
-            self.counter += 1
 
         if self.is_running:
             return
@@ -229,3 +227,4 @@ class DetectLaneNode:
 if __name__ == '__main__':
     node = DetectLaneNode('detect_lane_node')
     node.run_debug()
+    rospy.spin()

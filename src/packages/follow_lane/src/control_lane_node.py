@@ -73,18 +73,18 @@ class ControlLaneNode:
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
-            twist = Twist2DStamped()
-            print(f'{rospy.Time.now()} \n\n {rospy.get_time()}')
-            twist.header.stamp = rospy.Time.now()
-            
-            twist.v = self.v
-            twist.omega = self.a
+            if self.enable:
+                twist = Twist2DStamped()
+                twist.header.stamp = rospy.Time.now()
+                
+                twist.v = self.v
+                twist.omega = self.a
+                self.pub_cmd_vel.publish(twist)
 
-            self.pub_cmd_vel.publish(twist)
-
-            rate.sleep()
+                rate.sleep()
 
 if __name__ == '__main__':
     # create the node
     node = ControlLaneNode('control_lane_node')
     node.run()
+    rospy.spin()

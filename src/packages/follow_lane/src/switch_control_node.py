@@ -40,6 +40,7 @@ class SwitchControlNode:
             msg_control = Int32()
             msg_control.data = self._control_mode.value
             self.pub_control.publish(msg_control)
+            rate.sleep()
 
 if __name__ == '__main__':
     # create the node
