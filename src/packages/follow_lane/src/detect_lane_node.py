@@ -8,8 +8,7 @@ from std_msgs.msg import Float64, String
 from sensor_msgs.msg import CompressedImage
 from enum import Enum
 import yaml
-from dynamic_reconfigure.server import Server
-from follow_lane.cfg import DetectLaneConfig
+import util
 
 #from duckietown.dtros import DTROS, NodeType
 
@@ -18,58 +17,51 @@ class DetectLaneNode:
         # initialize the ROS node
         rospy.init_node(node_name)
         
-        # Setup dynamic reconfigure server
-        self.srv = Server(DetectLaneConfig, self.reconfigure_callback)
-
         
         self._vehicle_name = os.environ['VEHICLE_NAME']
+        util.init_parameters(node_name,self)
+                
         self._camera_topic = f"/{self._vehicle_name}/camera_node/image/compressed"
         self.sub_image_original = rospy.Subscriber(self._camera_topic, CompressedImage, self.cbFindLane, queue_size = 1)
         self.pub_lane = rospy.Publisher(f'/{self._vehicle_name}/detect/lane', Float64, queue_size = 1)
 
-        self._crop_im_size = 1000
+        self._crop_im_size = 400
         self.is_running = False
         self.counter = 0
 
         # init debug channels 
-        self.pub_debug_lane = rospy.Publisher(f'/{self._vehicle_name}/debug/lane/image/compressed',CompressedImage,queue_size=1)
-        self.pub_debug_white = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_white/image/compressed',CompressedImage,queue_size=1)
-        self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow/image/compressed',CompressedImage,queue_size=1)
+        self.pub_debug_lane = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_croped',CompressedImage,queue_size=1)
+        self.pub_debug_white = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_white',CompressedImage,queue_size=1)
+        self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow',CompressedImage,queue_size=1)
 
 
-    def reconfigure_callback(self, config, level):
-        """Dynamic reconfigure callback"""
-        print(f"Reconfigure Request: {config}")
+    def update_parameters(self):
         # Update white line parameters
-        self.hue_white_l = config.white_hl
-        self.hue_white_h = config.white_hh
-        self.saturation_white_l = config.white_sl
-        self.saturation_white_h = config.white_sh
-        self.lightness_white_l = config.white_vl
-        self.lightness_white_h = config.white_vh
+        self.hue_white_l = self.parameters["white"]["hl"]["default"]
+        self.hue_white_h = self.parameters["white"]["hh"]["default"]
+        self.saturation_white_l = self.parameters["white"]["sl"]["default"]
+        self.saturation_white_h = self.parameters["white"]["sh"]["default"]
+        self.lightness_white_l = self.parameters["white"]["vl"]["default"]
+        self.lightness_white_h = self.parameters["white"]["vh"]["default"]
         
         # Update yellow line parameters
-        self.hue_yellow_l = config.yellow_hl
-        self.hue_yellow_h = config.yellow_hh
-        self.saturation_yellow_l = config.yellow_sl
-        self.saturation_yellow_h = config.yellow_sh
-        self.lightness_yellow_l = config.yellow_vl
-        self.lightness_yellow_h = config.yellow_vh
+        self.hue_yellow_l = self.parameters["yellow"]["hl"]["default"]
+        self.hue_yellow_h = self.parameters["yellow"]["hh"]["default"]
+        self.saturation_yellow_l = self.parameters["yellow"]["sl"]["default"]
+        self.saturation_yellow_h = self.parameters["yellow"]["sh"]["default"]
+        self.lightness_yellow_l = self.parameters["yellow"]["vl"]["default"]
+        self.lightness_yellow_h = self.parameters["yellow"]["vh"]["default"]
         
         # Update perspective transform points
-        self.top_left_x = config.top_left_x
-        self.top_left_y = config.top_left_y
-        self.top_right_x = config.top_right_x
-        self.top_right_y = config.top_right_y
-        self.bottom_left_x = config.bottom_left_x
-        self.bottom_left_y = config.bottom_left_y
-        self.bottom_right_x = config.bottom_right_x
-        self.bottom_right_y = config.bottom_right_y
-        
-        return config
-
-
-
+        self.top_left_x = self.parameters["crop_image"]["top_left_x"]["default"]
+        self.top_left_y = self.parameters["crop_image"]["top_left_y"]["default"]
+        self.top_right_x = self.parameters["crop_image"]["top_right_x"]["default"]
+        self.top_right_y = self.parameters["crop_image"]["top_right_y"]["default"]
+        self.bottom_left_x = self.parameters["crop_image"]["bottom_left_x"]["default"]
+        self.bottom_left_y = self.parameters["crop_image"]["bottom_left_y"]["default"]
+        self.bottom_right_x = self.parameters["crop_image"]["bottom_right_x"]["default"]
+        self.bottom_right_y = self.parameters["crop_image"]["bottom_right_y"]["default"]
+  
     def crop_img(self,img):
         img = img.copy()
         
@@ -90,7 +82,7 @@ class DetectLaneNode:
         _,th1 = cv2.threshold(grad,127,255,cv2.THRESH_BINARY)
 
         a = []
-        for row in range(distance-100, distance+100):
+        for row in range(distance-50, distance+50):
             if np.where(th1[row] == 255)[0].size == 0:
                 continue
             else:
@@ -116,6 +108,8 @@ class DetectLaneNode:
         
         self.is_running = True
         self.conunter = 0
+        self.update_parameters()
+
 
         np_arr = np.frombuffer(image_msg.data, np.uint8)
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
@@ -151,7 +145,6 @@ class DetectLaneNode:
         msg_error.data = 1-(lane_center / len(img) * 2)
 
         self.pub_lane.publish(msg_error)
-        self.is_running = False
         print(f"Lane error: {msg_error.data} range [-1,1]")
 
 
@@ -167,22 +160,24 @@ class DetectLaneNode:
         self.debug_img_yellow = mask_yellow
 
         
-        #image = cv2.circle(img,(int(lane_center),int(len(img) / 2)),3,(255,0,0))
-        #image = cv2.line(image, (white_alternative , 0), (white_alternative , 1000) ,color=(255,255,255)) 
-        #image = cv2.line(image, (yellow_alternative , 0), (yellow_alternative , 1000) ,color=(255,255,0))
-        #image = cv2.line(image, (0,int(len(img) * 0.75) + 100) , (len(img[0]),int(len(img) * 0.75) + 100), color=(255,255,255) )
-        #image = cv2.line(image, (0,int(len(img) * 0.75) - 100) , (len(img[0]),int(len(img) * 0.75) - 100), color=(255,255,255))
+        image = cv2.circle(img,(int(lane_center),int(len(img) / 2)),3,(255,0,0))
+        image = cv2.line(image, (white_alternative , 0), (white_alternative , self._crop_im_size) ,color=(255,255,255)) 
+        image = cv2.line(image, (yellow_alternative , 0), (yellow_alternative , self._crop_im_size) ,color=(255,255,0))
+        image = cv2.line(image, (0,int(len(img) * 0.75) + 100) , (len(img[0]),int(len(img) * 0.75) + 100), color=(255,255,255) )
+        image = cv2.line(image, (0,int(len(img) * 0.75) - 100) , (len(img[0]),int(len(img) * 0.75) - 100), color=(255,255,255))
 
-        #image = cv2.line(image,(int(len(img[0])/2),0),(int(len(img[0])/2),len(image)),(0,255,0))
-        #image = cv2.circle(image, (int(center_white), int(len(img) * 0.75)),  5,(255,255,255))
-        #image = cv2.circle(image, (int(center_yellow), int(len(img) * 0.75)), 5,(0,255,255))
+        image = cv2.line(image,(int(len(img[0])/2),0),(int(len(img[0])/2),len(image)),(0,255,0))
+        image = cv2.circle(image, (int(center_white), int(len(img) * 0.75)),  5,(255,255,255))
+        image = cv2.circle(image, (int(center_yellow), int(len(img) * 0.75)), 5,(0,255,255))
 
 
         
-        #cv2.imshow(self._window, image)
+        cv2.imshow('lane detection', image)
+        self.is_running = False
+        
         #cv2.imshow('white', mask_white)
         #cv2.imshow('yellow', mask_yellow)
-        #cv2.waitKey(1)
+        cv2.waitKey(1)
             
     def run_debug(self):
         rate = rospy.Rate(10)

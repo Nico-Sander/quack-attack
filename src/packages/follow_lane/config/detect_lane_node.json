@@ -1,0 +1,38 @@
+{
+"debug_image_topics":[
+    "/debug/lane_croped",
+    "/debug/lane_white",
+    "/debug/lane_yellow"
+],
+
+"parameters":{
+    "crop_image":{
+        "bottom_left_x": {"default":606,"min" : -100, "max": 1000},
+        "bottom_left_y": {"default":382,"min" : -100, "max": 1000},
+        "bottom_right_x": {"default":-29,"min" : -100, "max": 1000},
+        "bottom_right_y": {"default":382,"min" : -100, "max": 1000},
+        "top_left_x": {"default":159,"min" : -100, "max": 1000},
+        "top_left_y": {"default":218,"min" : -100, "max": 1000},
+        "top_right_x": {"default":441,"min" : -100, "max": 1000},
+        "top_right_y": {"default":218,"min" : -100, "max": 1000}
+    },
+
+    "yellow":{
+    "hh": {"default": 60, "min": 0, "max": 255},
+    "hl": {"default": 15, "min": 0, "max": 255},
+    "sh": {"default": 255, "min": 0, "max": 255},
+    "sl": {"default": 60, "min": 0, "max": 255},
+    "vh": {"default": 255, "min": 0, "max": 255},
+    "vl": {"default": 120, "min": 0, "max": 255}
+    },
+
+    "white":{
+    "hh": {"default": 255, "min": 0, "max": 255},
+    "hl": {"default": 0, "min": 0, "max": 255},
+    "sh": {"default": 41, "min": 0, "max": 255},
+    "sl": {"default": 0, "min": 0, "max": 255},
+    "vh": {"default": 255, "min": 0, "max": 255},
+    "vl": {"default": 161, "min": 0, "max": 255}
+    }
+}
+}
