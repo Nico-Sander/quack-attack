@@ -2,7 +2,7 @@
 
 import json
 import os
-import tkinter as tkx
+import tkinter as tk
 import cv2
 import rospy
 import util

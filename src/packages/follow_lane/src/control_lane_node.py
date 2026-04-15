@@ -39,10 +39,10 @@ class ControlLaneNode:
             self.enable = False
 
     def cbUpdateParameters(self,parameters):
-        self.kp = parameters["pid"]["p"]
-        self.ki = parameters["pid"]["i"]
-        self.kd = parameters["pid"]["d"]
-        self.MAX_VEL = parameters["pid"]["max_vel"]
+        self.kp = parameters["pid"]["p"]["default"]
+        self.ki = parameters["pid"]["i"]["default"]
+        self.kd = parameters["pid"]["d"]["default"]
+        self.MAX_VEL = parameters["pid"]["max_vel"]["default"]
 
     # error between 1 and -1
     def cbFollowLane(self, error):

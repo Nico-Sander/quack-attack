@@ -3,13 +3,6 @@ project(follow_lane)
 
 find_package(catkin REQUIRED COMPONENTS
   rospy
-  dynamic_reconfigure
-)
-
-# Generate dynamic reconfigure configuration files
-generate_dynamic_reconfigure_options(
-  cfg/DetectLane.cfg
-  cfg/ControlLane.cfg
 )
 
 catkin_package(
