@@ -4,7 +4,3 @@ project(follow_lane)
 find_package(catkin REQUIRED COMPONENTS
   rospy
 )
-
-catkin_package(
-  CATKIN_DEPENDS dynamic_reconfigure
-)
