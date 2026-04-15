@@ -19,7 +19,7 @@ class DetectLaneNode:
         
         
         self._vehicle_name = os.environ['VEHICLE_NAME']
-        util.init_parameters(node_name,self)
+        util.init_parameters(node_name,self.cbUpdateParameters)
                 
         self._camera_topic = f"/{self._vehicle_name}/camera_node/image/compressed"
         self.sub_image_original = rospy.Subscriber(self._camera_topic, CompressedImage, self.cbFindLane, queue_size = 1)
@@ -35,32 +35,32 @@ class DetectLaneNode:
         self.pub_debug_yellow = rospy.Publisher(f'/{self._vehicle_name}/debug/lane_yellow',CompressedImage,queue_size=1)
 
 
-    def update_parameters(self):
+    def cbUpdateParameters(self, parameters):
         # Update white line parameters
-        self.hue_white_l = self.parameters["white"]["hl"]["default"]
-        self.hue_white_h = self.parameters["white"]["hh"]["default"]
-        self.saturation_white_l = self.parameters["white"]["sl"]["default"]
-        self.saturation_white_h = self.parameters["white"]["sh"]["default"]
-        self.lightness_white_l = self.parameters["white"]["vl"]["default"]
-        self.lightness_white_h = self.parameters["white"]["vh"]["default"]
+        self.hue_white_l = parameters["white"]["hl"]["default"]
+        self.hue_white_h = parameters["white"]["hh"]["default"]
+        self.saturation_white_l = parameters["white"]["sl"]["default"]
+        self.saturation_white_h = parameters["white"]["sh"]["default"]
+        self.lightness_white_l = parameters["white"]["vl"]["default"]
+        self.lightness_white_h = parameters["white"]["vh"]["default"]
         
         # Update yellow line parameters
-        self.hue_yellow_l = self.parameters["yellow"]["hl"]["default"]
-        self.hue_yellow_h = self.parameters["yellow"]["hh"]["default"]
-        self.saturation_yellow_l = self.parameters["yellow"]["sl"]["default"]
-        self.saturation_yellow_h = self.parameters["yellow"]["sh"]["default"]
-        self.lightness_yellow_l = self.parameters["yellow"]["vl"]["default"]
-        self.lightness_yellow_h = self.parameters["yellow"]["vh"]["default"]
+        self.hue_yellow_l = parameters["yellow"]["hl"]["default"]
+        self.hue_yellow_h = parameters["yellow"]["hh"]["default"]
+        self.saturation_yellow_l = parameters["yellow"]["sl"]["default"]
+        self.saturation_yellow_h = parameters["yellow"]["sh"]["default"]
+        self.lightness_yellow_l = parameters["yellow"]["vl"]["default"]
+        self.lightness_yellow_h = parameters["yellow"]["vh"]["default"]
         
         # Update perspective transform points
-        self.top_left_x = self.parameters["crop_image"]["top_left_x"]["default"]
-        self.top_left_y = self.parameters["crop_image"]["top_left_y"]["default"]
-        self.top_right_x = self.parameters["crop_image"]["top_right_x"]["default"]
-        self.top_right_y = self.parameters["crop_image"]["top_right_y"]["default"]
-        self.bottom_left_x = self.parameters["crop_image"]["bottom_left_x"]["default"]
-        self.bottom_left_y = self.parameters["crop_image"]["bottom_left_y"]["default"]
-        self.bottom_right_x = self.parameters["crop_image"]["bottom_right_x"]["default"]
-        self.bottom_right_y = self.parameters["crop_image"]["bottom_right_y"]["default"]
+        self.top_left_x = parameters["crop_image"]["top_left_x"]["default"]
+        self.top_left_y = parameters["crop_image"]["top_left_y"]["default"]
+        self.top_right_x = parameters["crop_image"]["top_right_x"]["default"]
+        self.top_right_y = parameters["crop_image"]["top_right_y"]["default"]
+        self.bottom_left_x = parameters["crop_image"]["bottom_left_x"]["default"]
+        self.bottom_left_y = parameters["crop_image"]["bottom_left_y"]["default"]
+        self.bottom_right_x = parameters["crop_image"]["bottom_right_x"]["default"]
+        self.bottom_right_y = parameters["crop_image"]["bottom_right_y"]["default"]
   
     def crop_img(self,img):
         img = img.copy()
@@ -108,8 +108,6 @@ class DetectLaneNode:
         
         self.is_running = True
         self.conunter = 0
-        self.update_parameters()
-
 
         np_arr = np.frombuffer(image_msg.data, np.uint8)
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)

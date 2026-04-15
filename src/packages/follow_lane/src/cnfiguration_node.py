@@ -2,7 +2,7 @@
 
 import json
 import os
-import tkinter as tkx.html
+import tkinter as tkx
 import cv2
 import rospy
 import util
@@ -86,7 +86,10 @@ class ConfigurationNode:
             widget.destroy()
         self.sliders = {}
         for name, values in self.parameters.get(self.selected_group.get(), {}).items():
-            slider = tk.Scale(self.slider_frame, from_=values['min'], to=values['max'], orient='horizontal', label=name, command=lambda value, param=name: self.update_parameter(param, value))
+            is_float = isinstance(values['min'], float)
+
+
+            slider = tk.Scale(self.slider_frame, from_=values['min'], to=values['max'], orient='horizontal', label=name, command=lambda value, param=name: self.update_parameter(param, value), resolution=0.01 if is_float else 1)
             slider.set(values['default'])
             slider.pack(fill='x', pady=4)
             self.sliders[name] = slider
@@ -105,9 +108,10 @@ class ConfigurationNode:
         cv2.waitKey(1)
 
     def update_parameter(self, param, value):
-        self.parameters[self.selected_group.get()][param]['default'] = int(float(value))
-        print(f"Updated {param} to {value} in group {self.selected_group.get()} for node {self.selected_node.get()}")
+        is_float = isinstance(self.parameters[self.selected_group.get()][param]['min'], float)
+        self.parameters[self.selected_group.get()][param]['default'] = float(value) if is_float else int(float(value))
 
+        print(f"Updated {param} to {value} in group {self.selected_group.get()} for node {self.selected_node.get()}")
         payload = {'node': self.selected_node.get(), 'parameters': self.parameters}
         self.publisher.publish(String(data=json.dumps(payload)))
 

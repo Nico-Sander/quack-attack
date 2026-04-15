@@ -6,19 +6,17 @@ from std_msgs.msg import Float64, Int32, String
 from duckietown_msgs.msg import Twist2DStamped
 import os
 from switch_control_node import ControlType
-from dynamic_reconfigure.server import Server
-from follow_lane.cfg import ControlLaneConfig
 import yaml
+import util
 
 class ControlLaneNode:
     def __init__(self,node_name):
         rospy.init_node(node_name)
         self.enable = True
 
-        # Setup dynamic reconfigure server
-        self.srv = Server(ControlLaneConfig, self.reconfigure_callback)
-
         self._vehicle_name = os.environ['VEHICLE_NAME']
+        util.init_parameters(node_name, self.cbUpdateParameters)
+
         twist_topic = f"/{self._vehicle_name}/car_cmd_switch_node/cmd"
         self.pub_cmd_vel = rospy.Publisher(twist_topic, Twist2DStamped, queue_size = 1)
 
@@ -33,17 +31,6 @@ class ControlLaneNode:
         self.a = 0
         rospy.on_shutdown(self.fnShutDown)
 
-    def reconfigure_callback(self, config, level):
-        """Dynamic reconfigure callback"""
-        print(f"Reconfigure Request: {config}")
-        # Update white line parameters
-        self.kp = config.p
-        self.ki = config.i
-        self.kd = config.d
-        self.MAX_VEL = config.max_vel
-        return config
-
-
     def cbControl(self,msg):
         if msg.data == ControlType.Lane.value:
             self.enable = True
@@ -51,12 +38,15 @@ class ControlLaneNode:
         else:
             self.enable = False
 
+    def cbUpdateParameters(self,parameters):
+        self.kp = parameters["pid"]["p"]
+        self.ki = parameters["pid"]["i"]
+        self.kd = parameters["pid"]["d"]
+        self.MAX_VEL = parameters["pid"]["max_vel"]
+
     # error between 1 and -1
     def cbFollowLane(self, error):
-
         print(f'received message. enabled : {self.enable}')
-        if not self.enable:
-            return        
         error = error.data
 
         #Todo Write own code for PID controller here
