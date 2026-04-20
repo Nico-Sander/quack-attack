@@ -1,0 +1,15 @@
+services:
+  duckierace_env:
+    build: .
+    container_name: duckie_ros
+    # network_mode: "host" acts exactly like the VM Bridged Adapter
+    network_mode: "host"
+    environment:
+      - ROS_MASTER_URI=http://192.168.90.229:11311  # trick's actual IP
+      - ROS_IP=192.168.90.182                       # Your laptop's actual IP
+      - VEHICLE_NAME=trick    
+    volumes:
+      # Mounts your local repo into the container's /workspace folder
+      - .:/workspace 
+    # Keeps the container running in the background
+    command: sleep infinity

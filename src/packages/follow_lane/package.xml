@@ -7,6 +7,8 @@
   </description>
   <maintainer email="duckie.town@web.de">duckie town</maintainer>
   <license>None</license>
+  
+  <exec_depend>python3-opencv</exec_depend>
 
   <buildtool_depend>catkin</buildtool_depend>
 </package>
