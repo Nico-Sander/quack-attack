@@ -1,15 +1,26 @@
 # DuckieRace
 
-## Setup Virtual Box with ros noetic
+## Setup
 
-Download Ubuntu 20.04 image from https://www.releases.ubuntu.com/focal/
-Setup a virtual machine with the image. Set the network adapter to bridged adapter so that the VM uses the same Network as the host.
-Follow the instructions from https://wiki.ros.org/noetic/Installation/Ubuntu to setup ros noetic.
-Clone this github repository and change the remote head to your own github repository.
+### 1. Clone the repo
 ```
-git clone https://github.com/DuckieBotIRAS/DuckieRace_2026.git
-git remote set-url <your-github-repository-url>
+git clone https://github.com/Nico-Sander/quack-attack.git
 ```
+
+### 2. Install dependencies
+
+- Docker and Docker Compose
+
+### 3. Build the Docker Image and start the container
+```bash
+docker compose up -d
+```
+
+### 4. Enter the container
+```bash
+docker exec -it duckie_ros bash
+```
+
 
 ## Launch Ros nodes
 
