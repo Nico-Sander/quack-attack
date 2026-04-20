@@ -4,10 +4,29 @@ services:
     container_name: duckie_ros
     network_mode: "host"
     environment:
-      # These variables will be populated by the .env file
+      # These variables will be populated by your .env file
       - ROS_MASTER_URI=http://${DUCKIEBOT_IP}:11311
       - ROS_IP=${HOST_IP}
       - VEHICLE_NAME=${VEHICLE_NAME}
+      
+      # X11 Display routing
+      - DISPLAY=$DISPLAY
+      
+      # Crucial: Fixes shared memory rendering crashes with RViz in Docker
+      - QT_X11_NO_MITSHM=1
+
     volumes:
       - .:/workspace 
+      # Mount the host's X11 socket
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      
+    # FIX 1: Pass the GPU hardware to the container for RViz
+    devices:
+      - /dev/dri:/dev/dri
+      
+    # FIX 2: Tell the container how to find the Duckiebot on the network
+    # Change "trick.local" to match whatever hostname your bot actually uses
+    extra_hosts:
+      - "trick.local:${DUCKIEBOT_IP}"
+
     command: sleep infinity

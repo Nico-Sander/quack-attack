@@ -1,12 +1,17 @@
 FROM ros:noetic-ros-base
 
-# 1. Install basic build tools and rosdep tools
+ARG DEBIAN_FRONTEND=noninteractive
+
+# 1. Install basic build tools, rosdep tools, and GUI dependencies
 RUN apt-get update && apt-get install -y \
     python3-catkin-tools \
     python3-pip \
     python3-rosdep \
     git \
     nano \
+    ros-noetic-rqt \
+    ros-noetic-rqt-common-plugins \
+    ros-noetic-rviz \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

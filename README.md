@@ -56,6 +56,12 @@ For multiple nodes you can write launchers and run them like
 launchers/follow_lane.sh
 ```
 
+## Common Commands
+- Rebuild Image:
+```bash
+docker compose build --no-cache
+```
+
 ## code structure
 This reposistory is formed as a catkin workspace. The code is seprated in packages. The actual code for the DuckieRace challenge is in src/package/follow_lane/src. The package duckietown_msgs contains message definitions for the communication with the nodes running on the duckiebot. 
 
