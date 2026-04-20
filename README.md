@@ -1,19 +1,28 @@
-# DuckieRace
+# DuckieRace: Quack Attack
 
-## Setup
+This repository contains the ROS Noetic workspace for the DuckieRace challenge. We use Docker to containerize the environment, ensuring consistent dependencies and a quick setup across all machines.
 
-### 1. Clone the repo
+## Prerequisites
+- [Docker](https://docs.docker.com/get-docker/)
+- [Docker Compose](https://docs.docker.com/compose/install/)
+
+---
+
+## Setup Instructions
+
+### 1. Clone the repository
+Clone the project directly to your host machine:
+```bash
+git clone [https://github.com/Nico-Sander/quack-attack.git](https://github.com/Nico-Sander/quack-attack.git)
+cd quack-attack
 ```
-git clone https://github.com/Nico-Sander/quack-attack.git
-```
 
-### 2. Install dependencies
-
-- Docker and Docker Compose
+### 2. Configure network
+Copy the `.env.example` file to `.env` and adjust `HOST_IP` to your local IP Adress of you device.
 
 ### 3. Build the Docker Image and start the container
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
 ### 4. Enter the container
