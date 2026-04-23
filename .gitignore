@@ -3,4 +3,5 @@ devel/*
 .catkin_workspace
 **__pycache__**
 .env
+.vscode/
 
