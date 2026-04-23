@@ -20,12 +20,11 @@ services:
       # Mount the host's X11 socket
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       
-    # FIX 1: Pass the GPU hardware to the container for RViz
+    # Pass GPU hardware to the container for RViz
     devices:
       - /dev/dri:/dev/dri
       
-    # FIX 2: Tell the container how to find the Duckiebot on the network
-    # Change "trick.local" to match whatever hostname your bot actually uses
+    # Tell the container how to find the Duckiebot on the network
     extra_hosts:
       - "trick.local:${DUCKIEBOT_IP}"
 
