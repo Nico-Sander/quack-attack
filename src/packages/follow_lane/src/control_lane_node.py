@@ -29,6 +29,10 @@ class ControlLaneNode:
         self.lastError = 0
         self.v = 0
         self.a = 0
+
+        self.integral = 0.0           
+        self.last_time = None
+
         rospy.on_shutdown(self.fnShutDown)
 
     def cbControl(self,msg):
@@ -49,9 +53,69 @@ class ControlLaneNode:
         print(f'received message. enabled : {self.enable}')
         error = error.data
 
-        #Todo Write own code for PID controller here
-        self.v = 0
-        self.a = 0                
+        # Wenn der Node nicht aktiv ist, nichts tun
+        if not self.enable:
+            self.v = 0.0
+            self.a = 0.0
+            return
+
+        # 1. Zeitdifferenz (dt) berechnen
+        current_time = rospy.Time.now().to_sec()
+        
+        # Beim allerersten Aufruf haben wir noch kein dt
+        if self.last_time is None:
+            self.last_time = current_time
+            self.lastError = error
+            return
+            
+        dt = current_time - self.last_time
+        
+        # Schutz gegen Division durch Null, falls Nachrichten zu schnell kommen
+        if dt <= 0.0:
+            return
+
+        # ==========================================
+        # PID BERECHNUNG
+        # ==========================================
+
+        # P-Anteil (Proportional)
+        p_term = self.kp * error
+
+        # I-Anteil (Integral) - summiert den Fehler über die Zeit auf
+        self.integral += error * dt
+        
+        # Anti-Windup: Begrenzt das Integral, damit es nicht explodiert
+        max_integral = 1.0  # Kann bei Bedarf angepasst werden
+        self.integral = max(min(self.integral, max_integral), -max_integral)
+        
+        i_term = self.ki * self.integral
+
+        # D-Anteil (Derivative) - reagiert auf die Änderung des Fehlers
+        d_term = self.kd * ((error - self.lastError) / dt)
+
+        # Gesamter Output für die Lenkung (Winkelgeschwindigkeit omega)
+        omega = p_term + i_term + d_term
+
+        # ==========================================
+        # GESCHWINDIGKEIT (LINEAR VELOCITY)
+        # ==========================================
+        # Dynamische Geschwindigkeit: Wenn der Fehler groß ist (Kurve), 
+        # fahren wir langsamer. Wenn er 0 ist (Gerade), fahren wir MAX_VEL.
+        # (Faktor 0.5 bedeutet, bei maximalem Error (1) fahren wir halbe Kraft)
+        velocity = self.MAX_VEL * (1.0 - (abs(error) * 0.5))
+        
+        # Sicherheitslimit nach unten, damit er nicht stehenbleibt
+        velocity = max(velocity, 0.05) 
+
+        # ==========================================
+        # WERTE FÜR DIE PUBLISH-SCHLEIFE SETZEN
+        # ==========================================
+        self.v = velocity
+        self.a = omega   # self.a ist in deiner run() Schleife twist.omega
+
+        # Zustand für den nächsten Aufruf speichern
+        self.lastError = error
+        self.last_time = current_time
         
 
     def fnShutDown(self):
