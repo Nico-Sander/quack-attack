@@ -19,13 +19,21 @@ WORKDIR /workspace
 # 2. Initialize rosdep
 RUN rosdep init || true
 
-# 3. Add the entrypoint script
+# 3. Copy source code
+COPY src/ /workspace/src/
+
+# 4. Install ros dependencies
+RUN apt-get update && rosdep update && \
+    rosdep install --from-paths src --ignore-src -r -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# 5. Add the entrypoint script
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# 4. Auto-source environments for interactive terminal sessions
+# 6. Auto-source environments for interactive terminal sessions
 RUN echo "source /opt/ros/noetic/setup.bash" >> ~/.bashrc
 RUN echo "if [ -f /workspace/devel/setup.bash ]; then source /workspace/devel/setup.bash; fi" >> ~/.bashrc
 
-# 5. Set the entrypoints
+# 7. Set the entrypoints
 ENTRYPOINT [ "/entrypoint.sh" ]

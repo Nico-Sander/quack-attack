@@ -15,10 +15,15 @@ services:
       # Crucial: Fixes shared memory rendering crashes with RViz in Docker
       - QT_X11_NO_MITSHM=1
 
+      # Tell the container where to find the auth file
+      - XAUTHORITY=/root/.Xauthority
+
     volumes:
       - .:/workspace 
       # Mount the host's X11 socket
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Share the host's X11 authentication file
+      - ~/.Xauthority:/root/.Xauthority:ro
       
     # Pass GPU hardware to the container for RViz
     devices:
@@ -26,6 +31,6 @@ services:
       
     # Tell the container how to find the Duckiebot on the network
     extra_hosts:
-      - "trick.local:${DUCKIEBOT_IP}"
+      - "${VEHICLE_NAME}.local:${DUCKIEBOT_IP}"
 
     command: sleep infinity
