@@ -176,3 +176,16 @@ This repository is formed as a Catkin workspace. The code is separated into pack
 - `src/packages/follow_lane/src`: Contains the actual code for the DuckieRace challenge.
 - `src/packages/duckietown_msgs`: Contains custom message definitions required for communicating with the nodes running directly on the Duckiebot.
 - `src/packages/duckie_visualizer`: Contains custom nodes for viewing live camera feeds and telemetry data.
+
+## Important Notes on using the duckiebot
+- Webinterface is accessible via: http://trick not http://trick.local
+
+### Power on duckiebot
+- Press the button on the battery and wait for the duckiebot to boot up.
+- Check the status of the duckiebot by running `dts fleet discover` on the host machine
+
+### Powering off the duckiebot
+1. Preferred: Use the webinterface 
+2. Press and hold the top button until the bot powers off
+
+**!IMPORTANT!** Do not remove any cables while the duckiebot is on, since this can cause curruption of the duckiebot's OS
