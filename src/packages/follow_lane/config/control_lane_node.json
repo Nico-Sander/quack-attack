@@ -2,9 +2,9 @@
 "debug_image_topics":[],
 "parameters":{
     "pid":{
-        "p": {"default": 0.5, "min": 0.0, "max": 10.0},
+        "p": {"default": 4.5, "min": 0.0, "max": 10.0},
         "i": {"default": 0.0, "min": 0.0, "max": 10.0},
-        "d": {"default": 0.1, "min": 0.0, "max": 10.0},
+        "d": {"default": 2.5, "min": 0.0, "max": 10.0},
         "max_vel": {"default": 0.5, "min": 0.0, "max": 10.0}
     }
 }

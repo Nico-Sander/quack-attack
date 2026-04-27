@@ -102,10 +102,10 @@ class ControlLaneNode:
         # Dynamische Geschwindigkeit: Wenn der Fehler groß ist (Kurve), 
         # fahren wir langsamer. Wenn er 0 ist (Gerade), fahren wir MAX_VEL.
         # (Faktor 0.5 bedeutet, bei maximalem Error (1) fahren wir halbe Kraft)
-        velocity = self.MAX_VEL * (1.0 - (abs(error) * 0.5))
+        velocity = self.MAX_VEL * (1.0 - (abs(error) * 0.8))
         
         # Sicherheitslimit nach unten, damit er nicht stehenbleibt
-        velocity = max(velocity, 0.05) 
+        velocity = max(velocity, 0.04) 
 
         # ==========================================
         # WERTE FÜR DIE PUBLISH-SCHLEIFE SETZEN
@@ -127,6 +127,7 @@ class ControlLaneNode:
     def run(self):
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
+            rospy.loginfo(f"{self.kp} {self.ki} {self.kd} {self.MAX_VEL}")
             if self.enable:
                 twist = Twist2DStamped()
                 twist.header.stamp = rospy.Time.now()
