@@ -9,6 +9,7 @@ import os
 class ControlType(Enum):
     Lane = 1
     Obstacle = 2
+    Stop = 3
 
 class SwitchControlNode:
     def __init__(self,node_name):
