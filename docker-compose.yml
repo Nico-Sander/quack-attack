@@ -31,6 +31,7 @@ services:
       
     # Tell the container how to find the Duckiebot on the network
     extra_hosts:
-      - "${VEHICLE_NAME}.local:${DUCKIEBOT_IP}"
+      - "${VEHICLE_NAME}.lan:${DUCKIEBOT_IP}"
+      - "${VEHICLE_NAME}:${DUCKIEBOT_IP}"
 
     command: sleep infinity
