@@ -26,5 +26,8 @@ tmux select-pane -t 1
 # Split the left pane vertically (creates bottom left)
 tmux split-window -v "docker exec -it $CONTAINER_NAME bash"
 
+# Move the focus back up to the top-left pane
+tmux select-pane -U
+
 # Attach your current terminal to the fully built session
 tmux attach-session -t $SESSION_NAME
