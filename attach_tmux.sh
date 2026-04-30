@@ -21,7 +21,7 @@ tmux split-window -h "docker exec -it $CONTAINER_NAME bash"
 tmux split-window -v "docker exec -it $CONTAINER_NAME bash"
 
 # Select the very first pane (top left)
-tmux select-pane -t 0
+tmux select-pane -t 1
 
 # Split the left pane vertically (creates bottom left)
 tmux split-window -v "docker exec -it $CONTAINER_NAME bash"
