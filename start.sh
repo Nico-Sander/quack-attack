@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-TARGET_SSID="Duckienetz"
+TARGET_SSID="DuckieNetz"
 VEHICLE_NAME="trick"
 VEHICLE_DOMAIN=".lan"
 
@@ -89,6 +89,31 @@ if [ -z "$HOST_IP" ]; then
 fi
 echo "✅ Host IP identified as $HOST_IP"
 
+# 5. Bulletproof Hostname Resolution
+echo "=========================================="
+echo " 🔧 Configuring Hostname Resolution...    "
+echo "=========================================="
+# ROS 1 nodes on the Jetson Nano register with their hostname (usually .local)
+# Since we use network_mode: "host", the Host PC must resolve these names.
+
+# Check if the exact mapping already exists for the current IP
+if ! grep -q "^$DUCKIEBOT_IP.*$VEHICLE_NAME\.local" /etc/hosts; then
+    echo "⚠️  Missing or outdated hostname mapping in /etc/hosts."
+    echo "   ROS requires this for peer-to-peer topic subscriptions."
+    echo "   Updating entry to: $DUCKIEBOT_IP $VEHICLE_NAME $VEHICLE_NAME.local $VEHICLE_NAME.lan"
+    echo "   (You may be prompted for your sudo password)"
+    
+    # Safely remove any stale IP mappings for this specific vehicle to prevent conflicts
+    sudo sed -i.bak "/ $VEHICLE_NAME/d" /etc/hosts
+    
+    # Append the newly discovered IP and hostnames
+    echo "$DUCKIEBOT_IP $VEHICLE_NAME $VEHICLE_NAME.local $VEHICLE_NAME.lan" | sudo tee -a /etc/hosts > /dev/null
+    
+    echo "✅ Hostname mapped successfully."
+else
+    echo "✅ Hostname mapping is already correct."
+fi
+
 # 5. Export variables to the shell environment
 export DUCKIEBOT_IP=$DUCKIEBOT_IP
 export HOST_IP=$HOST_IP
@@ -96,8 +121,25 @@ export VEHICLE_NAME=$VEHICLE_NAME
 
 # 6. Launch Docker Compose
 echo "=========================================="
+echo " 🔎 Verifying Docker Configuration...     "
+echo "=========================================="
+echo "The shell environment currently holds:"
+echo " -> DUCKIEBOT_IP: $DUCKIEBOT_IP"
+echo " -> HOST_IP: $HOST_IP"
+echo " -> VEHICLE_NAME: $VEHICLE_NAME"
+echo ""
+echo "Here is what Docker Compose will actually use for the ROS Master and IPs:"
+
+# Run config and filter for the exact lines we care about to prove it worked
+docker compose config | grep -E 'ROS_MASTER_URI|ROS_IP|extra_hosts' -A 2
+
+echo ""
+echo "=========================================="
 echo " 🚀 Starting ROS Workspace Container...   "
 echo "=========================================="
-docker compose up -d
+# (Optional: Add a pause here if you want to manually approve it before it runs)
+# read -p "Press Enter to launch or Ctrl+C to abort..."
+
+docker compose up -d --build
 
 echo "🟢 Container is running! Your environment is fully configured."

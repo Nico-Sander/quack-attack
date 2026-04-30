@@ -9,9 +9,11 @@ RUN apt-get update && apt-get install -y \
     python3-rosdep \
     git \
     nano \
+    vim \
     ros-noetic-rqt \
     ros-noetic-rqt-common-plugins \
     ros-noetic-rviz \
+    ros-noetic-compressed-image-transport \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
