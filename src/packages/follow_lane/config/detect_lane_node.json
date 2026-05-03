@@ -1,38 +1,48 @@
 {
-"debug_image_topics":[
-    "/debug/lane_croped",
-    "/debug/lane_white",
-    "/debug/lane_yellow"
-],
+    "debug_image_topics":[
+        "/debug/lane_croped",
+        "/debug/lane_white",
+        "/debug/lane_yellow",
+        "/debug/lane_red"
+    ],
 
-"parameters":{
-    "crop_image":{
-        "bottom_left_x": {"default":715,"min" : -100, "max": 1000},
-        "bottom_left_y": {"default":420,"min" : -100, "max": 1000},
-        "bottom_right_x": {"default":-52,"min" : -100, "max": 1000},
-        "bottom_right_y": {"default":398,"min" : -100, "max": 1000},
-        "top_left_x": {"default":167,"min" : -100, "max": 1000},
-        "top_left_y": {"default":212,"min" : -100, "max": 1000},
-        "top_right_x": {"default":477,"min" : -100, "max": 1000},
-        "top_right_y": {"default":220,"min" : -100, "max": 1000}
-    },
+    "parameters":{
+        "crop_image":{
+            "bottom_left_x": {"default":715,"min" : -100, "max": 1000},
+            "bottom_left_y": {"default":420,"min" : -100, "max": 1000},
+            "bottom_right_x": {"default":-52,"min" : -100, "max": 1000},
+            "bottom_right_y": {"default":398,"min" : -100, "max": 1000},
+            "top_left_x": {"default":167,"min" : -100, "max": 1000},
+            "top_left_y": {"default":212,"min" : -100, "max": 1000},
+            "top_right_x": {"default":477,"min" : -100, "max": 1000},
+            "top_right_y": {"default":220,"min" : -100, "max": 1000}
+        },
 
-    "yellow":{
-    "hh": {"default": 35, "min": 0, "max": 255},
-    "hl": {"default": 15, "min": 0, "max": 255},
-    "sh": {"default": 255, "min": 0, "max": 255},
-    "sl": {"default": 86, "min": 0, "max": 255},
-    "vh": {"default": 255, "min": 0, "max": 255},
-    "vl": {"default": 86, "min": 0, "max": 255}
-    },
+        "yellow":{
+            "hh": {"default": 35, "min": 0, "max": 255},
+            "hl": {"default": 15, "min": 0, "max": 255},
+            "sh": {"default": 255, "min": 0, "max": 255},
+            "sl": {"default": 86, "min": 0, "max": 255},
+            "vh": {"default": 255, "min": 0, "max": 255},
+            "vl": {"default": 86, "min": 0, "max": 255}
+        },
 
-    "white":{
-    "hh": {"default": 255, "min": 0, "max": 255},
-    "hl": {"default": 0, "min": 0, "max": 255},
-    "sh": {"default": 60, "min": 0, "max": 255},
-    "sl": {"default": 0, "min": 0, "max": 255},
-    "vh": {"default": 255, "min": 0, "max": 255},
-    "vl": {"default": 140, "min": 0, "max": 255}
+        "white":{
+            "hh": {"default": 255, "min": 0, "max": 255},
+            "hl": {"default": 0, "min": 0, "max": 255},
+            "sh": {"default": 60, "min": 0, "max": 255},
+            "sl": {"default": 0, "min": 0, "max": 255},
+            "vh": {"default": 255, "min": 0, "max": 255},
+            "vl": {"default": 140, "min": 0, "max": 255}
+        },
+
+        "red":{
+            "hh": {"default": 179, "min": 160, "max": 179},
+            "hl": {"default": 160, "min": 150, "max": 179},
+            "sh": {"default": 255, "min": 0, "max": 255},
+            "sl": {"default": 100, "min": 0, "max": 255},
+            "vh": {"default": 255, "min": 0, "max": 255},
+            "vl": {"default": 100, "min": 0, "max": 255}
+        }
     }
-}
 }

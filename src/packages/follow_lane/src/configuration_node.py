@@ -10,6 +10,9 @@ from std_msgs.msg import String
 import numpy as np
 from sensor_msgs.msg import CompressedImage
 
+os.environ['QT_X11_NO_MITSHM'] = '1'
+
+
 class ConfigurationNode:
     def __init__(self, node_name):
         rospy.init_node(node_name)
@@ -60,6 +63,12 @@ class ConfigurationNode:
         self.image_var.set(topic_name)
         if self.image_subscriber:
             self.image_subscriber.unregister()
+
+        try:
+            cv2.destroyWindow('Debug Image')
+        except cv2.error:
+            pass # Window doesn't exist yet, which is fine
+
         topic = topic_name if topic_name.startswith(f'/{self._vehicle_name}/') else f'/{self._vehicle_name}{topic_name}'
         
         print(f'changing image topic to {topic}')
@@ -104,8 +113,9 @@ class ConfigurationNode:
     def update_image(self, msg):
         np_arr = np.frombuffer(msg.data, np.uint8)
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        cv2.imshow('Debug Image', cv_image)
-        cv2.waitKey(1)
+        if cv_image is not None:
+            cv2.imshow('Debug Image', cv_image)
+            cv2.waitKey(1)
 
     def update_parameter(self, param, value):
         is_float = isinstance(self.parameters[self.selected_group.get()][param]['min'], float)
