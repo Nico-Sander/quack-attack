@@ -50,7 +50,6 @@ class ControlLaneNode:
 
     # error between 1 and -1
     def cbFollowLane(self, error):
-        print(f'received message. enabled : {self.enable}')
         error = error.data
 
         # Wenn der Node nicht aktiv ist, nichts tun
@@ -95,6 +94,7 @@ class ControlLaneNode:
 
         # Gesamter Output für die Lenkung (Winkelgeschwindigkeit omega)
         omega = p_term + i_term + d_term
+        omega = max(min(omega, 6.0), -6.0)
 
         # ==========================================
         # GESCHWINDIGKEIT (LINEAR VELOCITY)
@@ -102,7 +102,8 @@ class ControlLaneNode:
         # Dynamische Geschwindigkeit: Wenn der Fehler groß ist (Kurve), 
         # fahren wir langsamer. Wenn er 0 ist (Gerade), fahren wir MAX_VEL.
         # (Faktor 0.5 bedeutet, bei maximalem Error (1) fahren wir halbe Kraft)
-        velocity = self.MAX_VEL * (1.0 - (abs(error) * 0.8))
+        velocity = self.MAX_VEL * (1.0 - (abs(error) * 0.5))
+        velocity = self.MAX_VEL
         
         # Sicherheitslimit nach unten, damit er nicht stehenbleibt
         velocity = max(velocity, 0.04) 

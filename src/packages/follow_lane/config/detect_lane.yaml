@@ -1,0 +1,49 @@
+duck:
+  hh: 21
+  hl: 0
+  sh: 255
+  sl: 220
+  vh: 255
+  vl: 200
+gelb:
+  hh: 35
+  hl: 15
+  sh: 255
+  sl: 86
+  vh: 255
+  vl: 86
+lane_image:
+  bottom_left_x: 0
+  bottom_left_y: 470
+  bottom_right_x: 638
+  bottom_right_y: 470
+  top_left_x: 75
+  top_left_y: 300
+  top_right_x: 545
+  top_right_y: 300
+parking_image:
+  bottom_left_x: 0
+  bottom_left_y: 640
+  bottom_right_x: 640
+  bottom_right_y: 640
+  top_left_x: 80
+  top_left_y: 250
+  top_right_x: 560
+  top_right_y: 250
+red:
+  hh: 15
+  hl: 0
+  sh: 255
+  sl: 120
+  vh: 255
+  vl: 140
+show_debug: false
+v_max: 0.0
+v_min: 0.0
+white:
+  hh: 255
+  hl: 0
+  sh: 60
+  sl: 0
+  vh: 255
+  vl: 137

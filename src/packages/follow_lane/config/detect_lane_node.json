@@ -7,23 +7,23 @@
 
 "parameters":{
     "crop_image":{
-        "bottom_left_x": {"default":606,"min" : -100, "max": 1000},
-        "bottom_left_y": {"default":382,"min" : -100, "max": 1000},
-        "bottom_right_x": {"default":-29,"min" : -100, "max": 1000},
-        "bottom_right_y": {"default":382,"min" : -100, "max": 1000},
-        "top_left_x": {"default":159,"min" : -100, "max": 1000},
-        "top_left_y": {"default":218,"min" : -100, "max": 1000},
-        "top_right_x": {"default":441,"min" : -100, "max": 1000},
-        "top_right_y": {"default":218,"min" : -100, "max": 1000}
+        "bottom_left_x": {"default":715,"min" : -100, "max": 1000},
+        "bottom_left_y": {"default":420,"min" : -100, "max": 1000},
+        "bottom_right_x": {"default":-52,"min" : -100, "max": 1000},
+        "bottom_right_y": {"default":398,"min" : -100, "max": 1000},
+        "top_left_x": {"default":167,"min" : -100, "max": 1000},
+        "top_left_y": {"default":212,"min" : -100, "max": 1000},
+        "top_right_x": {"default":477,"min" : -100, "max": 1000},
+        "top_right_y": {"default":220,"min" : -100, "max": 1000}
     },
 
     "yellow":{
     "hh": {"default": 35, "min": 0, "max": 255},
-    "hl": {"default": 20, "min": 0, "max": 255},
+    "hl": {"default": 15, "min": 0, "max": 255},
     "sh": {"default": 255, "min": 0, "max": 255},
-    "sl": {"default": 80, "min": 0, "max": 255},
+    "sl": {"default": 86, "min": 0, "max": 255},
     "vh": {"default": 255, "min": 0, "max": 255},
-    "vl": {"default": 80, "min": 0, "max": 255}
+    "vl": {"default": 86, "min": 0, "max": 255}
     },
 
     "white":{
@@ -32,7 +32,7 @@
     "sh": {"default": 60, "min": 0, "max": 255},
     "sl": {"default": 0, "min": 0, "max": 255},
     "vh": {"default": 255, "min": 0, "max": 255},
-    "vl": {"default": 180, "min": 0, "max": 255}
+    "vl": {"default": 140, "min": 0, "max": 255}
     }
 }
 }
