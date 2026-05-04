@@ -19,6 +19,8 @@ class DetectLaneNode:
         # initialize the ROS node
         rospy.init_node(node_name)
 
+        self.LANE_SEARCH_Y_RATIO = 0.75
+
         self._vehicle_name = os.environ["VEHICLE_NAME"]
         util.init_parameters(node_name, self.cbUpdateParameters)
 
@@ -134,34 +136,49 @@ class DetectLaneNode:
             return
 
         self.is_running = True
-        self.conunter = 0
+        self.counter = 0
 
         np_arr = np.frombuffer(image_msg.data, np.uint8)
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         img = self.crop_img(cv_image)
 
+        # --- 1. YELLOW DETECTION (HSV) ---
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
         mask_yellow = cv2.inRange(
             hsv,
             (self.hue_yellow_l, self.saturation_yellow_l, self.lightness_yellow_l),
             (self.hue_yellow_h, self.saturation_yellow_h, self.lightness_yellow_h),
         )
 
+        # --- 2. WHITE DETECTION (HLS + CLAHE) ---
+        hls = cv2.cvtColor(img, cv2.COLOR_BGR2HLS)
+        
+        # Apply CLAHE to the Lightness channel (Index 1 in HLS)
+        l_channel = hls[:, :, 1]
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        hls[:, :, 1] = clahe.apply(l_channel)
+
+        # Note: OpenCV HLS order is (Hue, Lightness, Saturation)
         mask_white = cv2.inRange(
-            hsv,
-            (self.hue_white_l, self.saturation_white_l, self.lightness_white_l),
-            (self.hue_white_h, self.saturation_white_h, self.lightness_white_h),
+            hls,
+            (self.hue_white_l, self.lightness_white_l, self.saturation_white_l),
+            (self.hue_white_h, self.lightness_white_h, self.saturation_white_h),
         )
 
+        # --- 3. MORPHOLOGICAL CLEANUP (Erosion)---
+        kernel = np.ones((11, 11), np.uint8)
+        mask_white = cv2.morphologyEx(mask_white, cv2.MORPH_OPEN, kernel)
+        mask_white = cv2.morphologyEx(mask_white, cv2.MORPH_CLOSE, kernel)
+
+        # --- 4. LANE CENTER CALCULATION ---
         white_alternative = int(len(img[0]) * 0.95)
         yellow_alternative = int(len(img[0]) * 0.05)
 
         center_white = self.get_x_for_driving(
-            mask_white, int(len(img) * 0.75), white_alternative, left_line=True
+            mask_white, int(len(img) * self.LANE_SEARCH_Y_RATIO), white_alternative, left_line=True
         )
         center_yellow = self.get_x_for_driving(
-            mask_yellow, int(len(img) * 0.75), yellow_alternative, left_line=False
+            mask_yellow, int(len(img) * self.LANE_SEARCH_Y_RATIO), yellow_alternative, left_line=False
         )
 
         if center_white <= center_yellow:
@@ -178,7 +195,7 @@ class DetectLaneNode:
         self.pub_lane.publish(msg_error)
         print(f"Lane error: {msg_error.data} range [-1,1]")
 
-        # saving for debug
+        # --- 5. DEBUGGING & DRAWING ---
         self.img = img
         self.lane_center = lane_center
         self.white_alternative = white_alternative
@@ -204,14 +221,14 @@ class DetectLaneNode:
         )
         image = cv2.line(
             image,
-            (0, int(len(img) * 0.75) + 100),
-            (len(img[0]), int(len(img) * 0.75) + 100),
+            (0, int(len(img) * self.LANE_SEARCH_Y_RATIO) + 100),
+            (len(img[0]), int(len(img) * self.LANE_SEARCH_Y_RATIO) + 100),
             color=(255, 255, 255),
         )
         image = cv2.line(
             image,
-            (0, int(len(img) * 0.75) - 100),
-            (len(img[0]), int(len(img) * 0.75) - 100),
+            (0, int(len(img) * self.LANE_SEARCH_Y_RATIO) - 100),
+            (len(img[0]), int(len(img) * self.LANE_SEARCH_Y_RATIO) - 100),
             color=(255, 255, 255),
         )
 
@@ -222,17 +239,15 @@ class DetectLaneNode:
             (0, 255, 0),
         )
         image = cv2.circle(
-            image, (int(center_white), int(len(img) * 0.75)), 5, (255, 255, 255)
+            image, (int(center_white), int(len(img) * self.LANE_SEARCH_Y_RATIO)), 5, (255, 255, 255)
         )
         image = cv2.circle(
-            image, (int(center_yellow), int(len(img) * 0.75)), 5, (0, 255, 255)
+            image, (int(center_yellow), int(len(img) * self.LANE_SEARCH_Y_RATIO)), 5, (0, 255, 255)
         )
 
         cv2.imshow("lane detection", image)
         self.is_running = False
 
-        # cv2.imshow('white', mask_white)
-        # cv2.imshow('yellow', mask_yellow)
         cv2.waitKey(1)
 
     def run_debug(self):

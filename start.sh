@@ -2,7 +2,7 @@
 
 # Configuration
 TARGET_SSID="DuckieNetz"
-VEHICLE_NAME="tick"
+VEHICLE_NAME="trick"
 VEHICLE_DOMAIN=".lan"
 
 echo "=========================================="
@@ -140,6 +140,6 @@ echo "=========================================="
 # (Optional: Add a pause here if you want to manually approve it before it runs)
 # read -p "Press Enter to launch or Ctrl+C to abort..."
 
-docker compose up -d
+docker compose up -d --force-recreate
 
 echo "🟢 Container is running! Your environment is fully configured."

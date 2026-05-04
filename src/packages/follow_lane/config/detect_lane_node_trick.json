@@ -20,20 +20,20 @@
 
         "yellow":{
             "hh": {"default": 35, "min": 0, "max": 255},
-            "hl": {"default": 18, "min": 0, "max": 255},
+            "hl": {"default": 15, "min": 0, "max": 255},
             "sh": {"default": 255, "min": 0, "max": 255},
-            "sl": {"default": 100, "min": 0, "max": 255},
+            "sl": {"default": 86, "min": 0, "max": 255},
             "vh": {"default": 255, "min": 0, "max": 255},
-            "vl": {"default": 100, "min": 0, "max": 255}
+            "vl": {"default": 86, "min": 0, "max": 255}
         },
 
         "white":{
             "hh": {"default": 179, "min": 0, "max": 255},
             "hl": {"default": 0, "min": 0, "max": 255},
-            "sh": {"default": 100, "min": 0, "max": 255},
+            "sh": {"default": 70, "min": 0, "max": 255},
             "sl": {"default": 0, "min": 0, "max": 255},
             "vh": {"default": 255, "min": 0, "max": 255},
-            "vl": {"default": 130, "min": 0, "max": 255}
+            "vl": {"default": 155, "min": 0, "max": 255}
         },
 
         "red":{

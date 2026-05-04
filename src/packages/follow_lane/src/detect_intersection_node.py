@@ -54,6 +54,7 @@ class DetectIntersectionNode:
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
         height, width = img.shape[:2]
+        #rospy.loginfo(f"Height: {height}, Width: {width}")
         # Crop to the bottom 1/3 of the image
         cropped_img = img[int(height * 2 / 3) : height, :]
 
@@ -84,6 +85,7 @@ class DetectIntersectionNode:
         red_pixel_count = cv2.countNonZero(red_mask)
 
         msg = Bool()
+        #rospy.loginfo(f"N red pixels: {red_pixel_count}")
         if red_pixel_count > self.red_pixel_threshold:
             msg.data = True
         else:
