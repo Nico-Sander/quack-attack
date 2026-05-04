@@ -16,6 +16,13 @@ RUN apt-get update && apt-get install -y \
     ros-noetic-compressed-image-transport \
     && rm -rf /var/lib/apt/lists/*
 
+# Install PyTorch and Deep Learning dependencies
+RUN pip3 install --no-cache-dir \
+    torch torchvision \
+    albumentations \
+    segmentation-models-pytorch \
+    opencv-python-headless
+
 WORKDIR /workspace
 
 # 2. Initialize rosdep
