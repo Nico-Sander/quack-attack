@@ -5,6 +5,7 @@ This repository contains the ROS Noetic workspace for the DuckieRace challenge. 
 ## Prerequisites
 - [Docker](https://docs.docker.com/get-docker/)
 - [Docker Compose](https://docs.docker.com/compose/install/)
+- `tmux` (Optional, but highly recommended for multi-pane terminal workflow)
 
 ### Docker Install Guide for Ubuntu (tested on 24.04)
 
@@ -76,7 +77,7 @@ docker compose version
 
 ## Initial Setup Instructions
 
-You only need to do this once when setting up the project on a new machine.
+You only need to do this once when setting up the project on a new machine or when the `Dockerfile` has changed.
 
 ### 1. Clone the repository
 
@@ -87,14 +88,13 @@ git clone [https://github.com/Nico-Sander/quack-attack.git](https://github.com/N
 cd quack-attack
 ```
 
-### 2. Configure network
+### 2. Build the Docker Image
+Compile the custom ROS Noetic image (which includes all tools needed for running the rosnodes used in this project). This is rarely necessary unless system-level dependencies in the `Dockerfile` are changed
 
-Copy the `.env.example` file to `.env` and adjust `HOST_IP` to your local IP Adress of you device. Also ensure `DUCKIEBOT_IP` and `VEHICLE_NAME` match your target Duckiebot.
-
-### 3. Build the Docker Image and start the container
 ```bash
 docker compose build
 ```
+
 
 ## Daily Workflow
 
@@ -108,25 +108,44 @@ Before starting the container, allow it to draw windows (like RViz or rqt) on yo
 xhost +local:root
 ```
 
+If you don't want to run this step after each restart of your system, consider putting this command into your `.bashrc` file.
+
 ### 2. Start the Container
 
-This turns on your ROS environment in the background (`-d` stands for detached mode). It will stay running until you explicitly stop it.
+Set the name of the Duckiebot you want to control in `./start.sh`, then run automated startup script:
 
 ```shell
-docker compose up -d
+./start.sh
 ```
 
-### 3. Open a Terminal inside the Container
+This script handles the heavy-lifting automatically:
+    - Verifies connection to the DuckieNetz Wi-Fi network (and attempts auto-connection if needed)
+    - Scans the network to dynamically locate the Duckiebot's and the Host's IP adresses.
+    - Injects the correct hostname mappings into your /etc/hosts file to allow seamless ROS peer-to-peer communication.
+    - Boots the duckie_ros container in the background
 
-This plugs a terminal sesion into the running container. **You can run dhis command in as many new terminal tabs as you need** (e.g., one for each ROS Node)
+### 3. Attach to the Workspace
+
+Once the container is running, plug a terminal session into it. Choose the method that fits your workflow:
+
+**Option A: The Tmux Multi-Pane Setup** (Recommended)
+
+```shell
+./attach_tmux.sh
+```
+
+This script automatically generates a background tmux session, splits your terminal into 4 distinct panes, and attaches all of them to the running duckie_ros container simultaneously. Perfect for running multiple ROS nodes at once.
+
+**Option B: The Standard Single Terminal**
 
 ```shell
 docker exec -it duckie_ros bash
 ```
+Use this to open a single, standard bash terminal inside the running container. You can run this command in as many new terminal tabs as you need.
 
 ### 4. Build and Run ROS Nodes
 
-Once inside the container, you are in a standard Ubuntu ROS Noetic environment. Your code from you host machine is automatically synced here.
+Once inside the container, you are in a standard Ubuntu ROS Noetic environment. The entrypoint.sh script automatically sources the /opt/ros/noetic/setup.bash and your local workspace overlays. Your code from your host machine is automatically synced here via volumes.
 
 Build the project and source the workspace:
 
@@ -155,14 +174,9 @@ launchers/follow_lane.sh
 docker compose down
 ```
 
-### 4. Enter the container
-```bash
-docker exec -it duckie_ros bash
-```
-
 ## Common / Useful Docker Commands
 
-- `docker compose up -d`: Starts the container in the background.
+- `docker compose up -d`: Starts the container in the background. (Networking configuration will not be correct, and Duckiebot will not be reachable)
 - `docker exec -it duckie_ros bash`: Opens an interactive bash terminal inside the running container.
 - `docker compose down`: Stops and removes the running container safely.
 - `docker compose restart`: Quickly restarts the container. Useful if you changed variables in your `.env` file and need them to apply.
@@ -175,7 +189,6 @@ This repository is formed as a Catkin workspace. The code is separated into pack
 
 - `src/packages/follow_lane/src`: Contains the actual code for the DuckieRace challenge.
 - `src/packages/duckietown_msgs`: Contains custom message definitions required for communicating with the nodes running directly on the Duckiebot.
-- `src/packages/duckie_visualizer`: Contains custom nodes for viewing live camera feeds and telemetry data.
 
 ## Important Notes on using the duckiebot
 - Webinterface is accessible via: http://trick not http://trick.local
@@ -186,6 +199,6 @@ This repository is formed as a Catkin workspace. The code is separated into pack
 
 ### Powering off the duckiebot
 1. Preferred: Use the webinterface 
-2. Press and hold the top button until the bot powers off
+2. Press and hold the top button for ~20 seconds, then release.
 
 **!IMPORTANT!** Do not remove any cables while the duckiebot is on, since this can cause curruption of the duckiebot's OS
