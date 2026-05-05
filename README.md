@@ -112,17 +112,17 @@ If you don't want to run this step after each restart of your system, consider p
 
 ### 2. Start the Container
 
-Set the name of the Duckiebot you want to control in `./start.sh`, then run automated startup script:
+Set the name of the Duckiebot you want to control in `./start.sh`, then run the automated startup script:
 
 ```shell
 ./start.sh
 ```
 
 This script handles the heavy-lifting automatically:
-    - Verifies connection to the DuckieNetz Wi-Fi network (and attempts auto-connection if needed)
-    - Scans the network to dynamically locate the Duckiebot's and the Host's IP adresses.
-    - Injects the correct hostname mappings into your /etc/hosts file to allow seamless ROS peer-to-peer communication.
-    - Boots the duckie_ros container in the background
+- Verifies connection to the DuckieNetz Wi-Fi network (and attempts auto-connection if needed)
+- Scans the network to dynamically locate the Duckiebot's and the Host's IP adresses.
+- Injects the correct hostname mappings into your /etc/hosts file to allow seamless ROS peer-to-peer communication.
+- Boots the duckie_ros container in the background
 
 ### 3. Attach to the Workspace
 
