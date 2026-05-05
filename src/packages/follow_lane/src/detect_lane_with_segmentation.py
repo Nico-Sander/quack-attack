@@ -9,9 +9,8 @@ from std_msgs.msg import Float64
 
 # Deep Learning Imports
 import torch
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 import segmentation_models_pytorch as smp
+import torchvision.transforms.functional as TF
 
 class DetectLaneNode:
     def __init__(self, node_name):
@@ -57,13 +56,6 @@ class DetectLaneNode:
             dummy_input = dummy_input.to(memory_format=torch.channels_last)
             self.model = torch.jit.trace(self.model, dummy_input)
         rospy.loginfo("Model compiled successfully!")
-
-        # Setup standard inference transformations
-        self.transform = A.Compose([
-            A.Resize(self._target_im_size, self._target_im_size),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2(),
-        ])
 
         # Setup ROS Topics
         self._camera_topic = f"/{self._vehicle_name}/camera_node/image/compressed"
@@ -131,12 +123,20 @@ class DetectLaneNode:
         crop_h = h // 3
         cropped_img = cv_image[h - crop_h:h, 0:w]
 
-        # Convert BGR (OpenCV) to RGB (Albumentations/PyTorch)
+        # Convert BGR (OpenCV) to RGB
         rgb_img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
 
-        # Apply evaluation transforms (Resize to target_im_size + Normalize)
-        transformed = self.transform(image=rgb_img)
-        tensor_img = transformed['image'].unsqueeze(0).to(self.device)
+        # 1. Resize using standard OpenCV
+        resized_img = cv2.resize(rgb_img, (self._target_im_size, self._target_im_size))
+
+        # 2. Convert to PyTorch Tensor (Automatically converts HWC -> CHW and scales 0-255 -> 0.0-1.0)
+        tensor_img = TF.to_tensor(resized_img)
+
+        # 3. Normalize (Using the exact same ImageNet means/stds as before)
+        tensor_img = TF.normalize(tensor_img, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+        # 4. Add batch dimension and move to device
+        tensor_img = tensor_img.unsqueeze(0).to(self.device)
 
         # ---> STRATEGY 1 OPTIMIZATION: Match the memory format <---
         tensor_img = tensor_img.to(memory_format=torch.channels_last)

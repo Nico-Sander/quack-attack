@@ -16,12 +16,18 @@ RUN apt-get update && apt-get install -y \
     ros-noetic-compressed-image-transport \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch and Deep Learning dependencies
-RUN pip3 install --no-cache-dir \
+# 1. Install PyTorch and Deep Learning dependencies
+# (We removed opencv-python-headless from this list)
+RUN pip3 install --no-cache-dir --ignore-installed \
+    "numpy<2.0" \
     torch torchvision \
     albumentations \
-    segmentation-models-pytorch \
-    opencv-python-headless
+    segmentation-models-pytorch
+
+# 2. The GUI Fix! 
+# Albumentations automatically sneaks 'opencv-python-headless' in as a hidden dependency.
+# We must explicitly uninstall it right after so ROS falls back to its native GUI-enabled cv2.
+RUN pip3 uninstall -y opencv-python-headless
 
 WORKDIR /workspace
 
