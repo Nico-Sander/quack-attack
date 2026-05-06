@@ -15,14 +15,14 @@ CURRENT_SSID=$(nmcli -t -f active,ssid dev wifi | grep '^yes' | cut -d':' -f2)
 if [ "$CURRENT_SSID" != "$TARGET_SSID" ]; then
     echo "❌ You are not connected to the '$TARGET_SSID' network."
     echo "   Currently connected to: ${CURRENT_SSID:-None}"
-    
+
     # NEW: Check if the network is actually in range
     echo "📡 Scanning for nearby networks..."
-    
+
     # nmcli lists visible SSIDs. grep -q silently checks for an exact match.
     if nmcli -t -f ssid dev wifi | grep -q "^${TARGET_SSID}$"; then
         echo "✅ '$TARGET_SSID' is in range."
-        
+
         read -p "❓ Do you want to try auto-connecting to $TARGET_SSID now? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -30,7 +30,7 @@ if [ "$CURRENT_SSID" != "$TARGET_SSID" ]; then
             echo
             echo "⏳ Attempting to connect..."
             nmcli dev wifi connect "$TARGET_SSID" password "$WIFI_PASS"
-            
+
             if [ $? -ne 0 ]; then
                 echo "💥 ERROR: Failed to connect to $TARGET_SSID. Please check the password or connect manually."
                 exit 1
@@ -57,16 +57,16 @@ DUCKIEBOT_IP=$(getent ahosts $VEHICLE_NAME$VEHICLE_DOMAIN | awk '{ print $1 }' |
 
 if [ -z "$DUCKIEBOT_IP" ]; then
     echo "⚠️ Fast DNS resolution failed. Identifying local subnet for scanning..."
-    
+
     WIFI_IFACE=$(nmcli -t -f DEVICE,TYPE connection show --active | grep 802-11-wireless | cut -d':' -f1 | head -n 1)
-    
+
     if [ -z "$WIFI_IFACE" ]; then
         echo "💥 ERROR: Could not determine the active Wi-Fi interface to perform a scan."
         exit 1
     fi
 
     SUBNET=$(ip route show dev $WIFI_IFACE | awk '/proto kernel/ {print $1}')
-    
+
     echo "📡 Engaging nmap scan on subnet $SUBNET..."
     DUCKIEBOT_IP=$(nmap -sn $SUBNET | grep "$VEHICLE_NAME$VEHICLE_DOMAIN" -A 1 | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b")
 fi
@@ -102,13 +102,13 @@ if ! grep -q "^$DUCKIEBOT_IP.*$VEHICLE_NAME\.local" /etc/hosts; then
     echo "   ROS requires this for peer-to-peer topic subscriptions."
     echo "   Updating entry to: $DUCKIEBOT_IP $VEHICLE_NAME $VEHICLE_NAME.local $VEHICLE_NAME.lan"
     echo "   (You may be prompted for your sudo password)"
-    
+
     # Safely remove any stale IP mappings for this specific vehicle to prevent conflicts
     sudo sed -i.bak "/ $VEHICLE_NAME/d" /etc/hosts
-    
+
     # Append the newly discovered IP and hostnames
-    echo "$DUCKIEBOT_IP $VEHICLE_NAME $VEHICLE_NAME.local $VEHICLE_NAME.lan" | sudo tee -a /etc/hosts > /dev/null
-    
+    echo "$DUCKIEBOT_IP $VEHICLE_NAME $VEHICLE_NAME.local $VEHICLE_NAME.lan" | sudo tee -a /etc/hosts >/dev/null
+
     echo "✅ Hostname mapped successfully."
 else
     echo "✅ Hostname mapping is already correct."

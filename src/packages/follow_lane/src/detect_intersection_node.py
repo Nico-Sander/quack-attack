@@ -22,7 +22,7 @@ class DetectIntersectionNode:
 
         self._vehicle_name = os.environ.get("VEHICLE_NAME", "default_robot")
         self.frame_counter = 0
-        self.red_pixel_threshold = 2000     #TODO: Needs to be fine tuned
+        self.red_pixel_threshold = 15000     #TODO: Needs to be fine tuned
         
         # HSV thresholds initialized with defaults
         self.hue_red_l = 160
@@ -109,7 +109,7 @@ class DetectIntersectionNode:
 
         # Publishe intersection status
         msg = Bool()
-        #rospy.loginfo(f"N red pixels: {red_pixel_count}")
+        rospy.loginfo(f"N red pixels: {red_pixel_count}")
         if red_pixel_count > self.red_pixel_threshold:
             msg.data = True
         else:

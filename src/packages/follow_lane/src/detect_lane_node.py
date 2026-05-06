@@ -38,8 +38,8 @@ class DetectLaneNode:
         self.lane_center = 0.0
         self.center_white = 0.0
         self.center_yellow = 0.0
-        self.white_fallback = int(self.target_im_size * 0.95)
-        self.yellow_fallback = int(self.target_im_size * 0.05)
+        self.white_fallback = int(self._target_im_size * 0.95)
+        self.yellow_fallback = int(self._target_im_size * 0.05)
 
         # Initialize PyTorch Model
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -71,7 +71,7 @@ class DetectLaneNode:
             f"{base_topic}/debug/lane_yellow", CompressedImage, queue_size=1
         )
 
-        rospy.loginfo(f"[{node_name}] Ready and listening to {self._camera_topic}")
+        rospy.loginfo(f"[{node_name}] Ready and listening to {base_topic}/camera_nod/image/compressed")
 
     def _init_model(self):
         """Loads and optimizes the U-Net model for inference."""
@@ -125,8 +125,11 @@ class DetectLaneNode:
     def cbFindLane(self, image_msg):
         """Processes incoming camera frames to calculate lane error."""
 
+        # Start inference timer
+        start_time = rospy.Time().now().to_sec()
+
         # Throttle processing if needed
-        if self.counter <= 3:
+        if self.counter <= 1:
             self.counter += 1
             return
 
@@ -225,6 +228,10 @@ class DetectLaneNode:
         except Exception:
             pass # Ignore if X11 forwarding isn't setup in the Docker container
         '''
+        
+        end_time = rospy.Time().now().to_sec()
+        rospy.loginfo(f"Inf Time: {end_time - start_time}")
+
         self.is_running = False
 
     def run_debug(self):
@@ -239,8 +246,8 @@ class DetectLaneNode:
                 
                 # Draw centers and boundaries
                 debug_img = cv2.circle(debug_img, (int(self.lane_center), int(self._target_im_size / 2)), 3, (255, 0, 0), -1)
-                debug_img = cv2.line(debug_img, (self.white_alternative, 0), (self.white_alternative, self._target_im_size), (255, 255, 255))
-                debug_img = cv2.line(debug_img, (self.yellow_alternative, 0), (self.yellow_alternative, self._target_im_size), (255, 255, 0))
+                debug_img = cv2.line(debug_img, (self.white_fallback, 0), (self.white_fallback, self._target_im_size), (255, 255, 255))
+                debug_img = cv2.line(debug_img, (self.yellow_fallback, 0), (self.yellow_fallback, self._target_im_size), (255, 255, 0))
                 
                 # Draw search window
                 debug_img = cv2.line(debug_img, (0, y_search + 20), (self._target_im_size, y_search + 20), (255, 255, 255))

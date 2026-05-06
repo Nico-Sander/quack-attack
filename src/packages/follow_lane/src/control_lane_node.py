@@ -86,13 +86,13 @@ class ControlLaneNode:
             d_term = self.kd * ((error - self.lastError) / dt)
 
             omega = p_term + i_term + d_term
-            omega = max(min(omega, 6.0), -6.0)
+            omega = max(min(omega, 5.0), -5.0)
 
             # ==========================================
             # GESCHWINDIGKEIT (LINEAR VELOCITY)
             # ==========================================
             # Use your dynamic velocity logic
-            velocity = self.MAX_VEL * (1.0 - (abs(error) * 0.9))
+            velocity = self.MAX_VEL * (1.0 - (abs(error) * 0.3))
             velocity = max(velocity, 0.04) 
             rospy.loginfo(f"Err: {error}, Vel: {velocity}")
 
