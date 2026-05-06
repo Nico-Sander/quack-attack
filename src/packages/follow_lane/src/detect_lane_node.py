@@ -23,7 +23,7 @@ class DetectLaneNode:
         rospy.init_node(node_name)
 
         # Configuration Constants
-        self.lane_search_y_ratio = 0.75
+        self.lane_search_y_ratio = 0.25
         self._target_im_size = 192 
         self._vehicle_name = os.environ.get("VEHICLE_NAME", "default_robot")
 
