@@ -183,12 +183,17 @@ docker compose down
 - `docker compose logs -f`: Streams the backgroung logs of the container. Press `CTRL+C` to exit the log view.
 - `docker compose build --no-cache`: Forces a complete rebuild of the Docker image from scratch. Use this only if you update the `Dockerfile` with new system-level dependencies.
 
-## code structure
+## Code Structure
 
 This repository is formed as a Catkin workspace. The code is separated into packages.
 
 - `src/packages/follow_lane/src`: Contains the actual code for the DuckieRace challenge.
 - `src/packages/duckietown_msgs`: Contains custom message definitions required for communicating with the nodes running directly on the Duckiebot.
+
+### Machine Learning Model Training
+The neural network models used by the `follow_lane` nodes in this repository are trained separately. If you need to adjust the dataset, retrain the model, or view the training pipeline, please visit our standalone ML training repository:
+
+**[duckie-lane-segmentation](https://github.com/Nico-Sander/duckie-lane-segmentation)**
 
 ## Important Notes on using the duckiebot
 - Webinterface is accessible via: http://trick not http://trick.local
