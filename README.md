@@ -1,4 +1,4 @@
-# DuckieRace: Quack Attack
+# DuckieRace: Quack Attack / Group 2
 
 This repository contains the ROS Noetic workspace for the DuckieRace challenge. We use Docker to containerize the environment, ensuring consistent dependencies and a quick setup across all machines.
 
