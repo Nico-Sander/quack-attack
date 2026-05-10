@@ -74,7 +74,7 @@ class SwitchControlNode:
         # Decision / random generation of TurnDirection
 
         # for testing purposes, always turn right at the intersection
-        self.turn_direction = TurnDirection.RIGHT
+        self.turn_direction = TurnDirection.LEFT
         pass
 
     def cbDuckieDetected(self, msg):
@@ -119,7 +119,7 @@ class SwitchControlNode:
                     self.state = State.CROSSING
                     self.state_timer = current_time
                     # TODO for testing purposes
-                    self.turn_direction = TurnDirection.RIGHT
+                    self.turn_direction = TurnDirection.LEFT
 
                     if self.turn_direction == TurnDirection.LEFT:
                         self.turn_duration = self.left_turn_duration
