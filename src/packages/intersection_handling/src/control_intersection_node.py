@@ -41,18 +41,18 @@ class ControlIntersectionNode:
         self.pre_turn_v = 0.15
         self.pre_turn_omega = 0.0
 
-        self.pre_turn_duration_left = 1.2
+        self.pre_turn_duration_left = 2.0
         self.pre_turn_duration_right = 1.0
         self.pre_turn_duration_straight = 0.0
 
         # Abbiegebewegungen
-        self.v_left = 0.15
+        self.v_left = 0.25
         self.omega_left = 3.0
 
-        self.v_right = 0.15
+        self.v_right = 0.25
         self.omega_right = -3.0
 
-        self.v_straight = 0.18
+        self.v_straight = 0.25
         self.omega_straight = 0.0
 
         self.pub_cmd_vel = rospy.Publisher(

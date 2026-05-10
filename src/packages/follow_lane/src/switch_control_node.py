@@ -51,12 +51,15 @@ class SwitchControlNode:
 
         ## Timer variable for the non-blocking wait
         self.state_timer = 0.0
-        self.stop_duration = 2.0
-        self.blind_duration = 1.0
+        self.stop_duration = 3.0
+
+        self.left_turn_duration = 3.0
+        self.right_turn_duration = 2.0
+        self.straight_duration = 2.0
 
         # TODO for testing purposes, always turn right at the intersection
         self.turn_direction = TurnDirection.RIGHT
-        self.turn_duration = 2.0
+        
 
     # ========================================================================
     # Sensor Callbacks (no logic allowed here)
@@ -117,6 +120,13 @@ class SwitchControlNode:
                     self.state_timer = current_time
                     # TODO for testing purposes
                     self.turn_direction = TurnDirection.RIGHT
+
+                    if self.turn_direction == TurnDirection.LEFT:
+                        self.turn_duration = self.left_turn_duration
+                    elif self.turn_direction == TurnDirection.RIGHT:
+                        self.turn_duration = self.right_turn_duration
+                    else:
+                        self.turn_duration = self.straight_duration                 
 
             elif self.state == State.CROSSING:
                 if (current_time - self.state_timer) >= self.turn_duration:
