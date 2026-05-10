@@ -138,8 +138,9 @@ class SwitchControlNode:
             if self.state == State.AT_STOP_LINE:
                 msg_control.data = ControlType.Stop.value
 
-            elif self.state == State.CROSSING or self.state == State.CROSSING_CLEARING:
+            elif self.state == State.CROSSING:
                 msg_control.data = ControlType.Crossing.value
+                
             else:
                 msg_control.data = ControlType.Lane.value
 

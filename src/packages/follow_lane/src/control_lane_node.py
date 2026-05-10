@@ -13,6 +13,7 @@ class ControlLaneNode:
     def __init__(self,node_name):
         rospy.init_node(node_name)
         self.enable = True
+        self.stopping = False
 
         self._vehicle_name = os.environ['VEHICLE_NAME']
         util.init_parameters(node_name, self.cbUpdateParameters)
@@ -36,16 +37,21 @@ class ControlLaneNode:
         rospy.on_shutdown(self.fnShutDown)
 
     def cbControl(self,msg):
-        # Use Lane Controller for LANE_FOLLOWING, Intersection Controller for CROSSING
         if msg.data == ControlType.Lane.value:
             self.enable = True
+            self.stopping = False
+
         elif msg.data == ControlType.Stop.value:
-            self.enable = True
+            self.enable = False
+            self.stopping = True
             self.v = 0.0
             self.a = 0.0
-        # CRFOSSING - disable Lane Controller
-        else:
+
+        else:  # Crossing
             self.enable = False
+            self.stopping = False
+            self.v = 0.0
+            self.a = 0.0
 
     def cbUpdateParameters(self,parameters):
         self.kp = parameters["pid"]["p"]["default"]
@@ -119,6 +125,7 @@ class ControlLaneNode:
 
     def run(self):
         rate = rospy.Rate(10)
+
         while not rospy.is_shutdown():
             #rospy.loginfo(f"{self.kp} {self.ki} {self.kd} {self.MAX_VEL}")
             #rospy.loginfo(f"Control Lane enabled: {self.enable}")
@@ -130,9 +137,15 @@ class ControlLaneNode:
                 twist.v = self.v
                 twist.omega = self.a
                 self.pub_cmd_vel.publish(twist)
-                
-            rate.sleep()
 
+            elif self.stopping:
+                twist.v = 0.0
+                twist.omega = 0.0
+                self.pub_cmd_vel.publish(twist)
+
+            # bei Crossing: nichts publishen
+            rate.sleep()
+            
 if __name__ == '__main__':
     try:
         # create the node
