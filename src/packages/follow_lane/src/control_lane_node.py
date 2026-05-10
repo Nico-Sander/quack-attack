@@ -36,13 +36,16 @@ class ControlLaneNode:
         rospy.on_shutdown(self.fnShutDown)
 
     def cbControl(self,msg):
+        # Use Lane Controller for LANE_FOLLOWING, Intersection Controller for CROSSING
         if msg.data == ControlType.Lane.value:
             self.enable = True
-        
-        else:
-            self.enable = False
+        elif msg.data == ControlType.Stop.value:
+            self.enable = True
             self.v = 0.0
             self.a = 0.0
+        # CRFOSSING - disable Lane Controller
+        else:
+            self.enable = False
 
     def cbUpdateParameters(self,parameters):
         self.kp = parameters["pid"]["p"]["default"]
@@ -126,13 +129,8 @@ class ControlLaneNode:
                 # Pass the PID calculated values
                 twist.v = self.v
                 twist.omega = self.a
-            else:
-                # Actively command the wheels to stop
-                twist.v = 0.0
-                twist.omega = 0.0
-
-            # Always publish, regardless of the enable state
-            self.pub_cmd_vel.publish(twist)
+                self.pub_cmd_vel.publish(twist)
+                
             rate.sleep()
 
 if __name__ == '__main__':
