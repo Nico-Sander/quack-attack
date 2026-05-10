@@ -20,12 +20,12 @@ class DashboardNode:
         self._vehicle_name = os.environ.get("VEHICLE_NAME", "default_duckie")
 
         # Layout dimensions
-        self.top_size = (400, 400)
+        self.top_size = (300, 220)
         self.pad_size = 10
         self.fps = 10
-        
-        # Calculate the total width: 3 images + 2 padding bars
-        self.total_width = (self.top_size[0] * 3) + (self.pad_size * 2)
+
+        # Total width: 4 top images + 3 padding bars
+        self.total_width = (self.top_size[0] * 4) + (self.pad_size * 3)
 
         # Initialize placeholder images to prevent concatenation crashes on startup
         self.img_lane = np.zeros((self.top_size[1], self.top_size[0], 3), dtype=np.uint8)
@@ -33,10 +33,10 @@ class DashboardNode:
         self.img_yellow = np.zeros((self.top_size[1], self.top_size[0], 3), dtype=np.uint8)
         
         # Red placeholder starts wide to matche total_width for vconcat safety
-        self.img_red = np.zeros((self.top_size[1], self.total_width, 3), dtype=np.uint8)
+        self.img_red = np.zeros((self.top_size[1], self.top_size[0], 3), dtype=np.uint8)
 
-        # Obstacle placeholder
-        self.img_obstacle = np.zeros((self.top_size[1], self.total_width, 3), dtype=np.uint8)
+        # Obstacle placeholder, later scaled to full dashboard width
+        self.img_obstacle = np.zeros((480, 640, 3), dtype=np.uint8)
 
         # Define visual separators (dark gray)
         self.pad_vertical = np.full((self.top_size[1], 10, 3), 50, dtype=np.uint8)
@@ -100,19 +100,39 @@ class DashboardNode:
 
     def _get_scaled_bottom_image(self, img: np.ndarray) -> np.ndarray:
         """
-        Scale bottom image to match the top row's total width 
-        while preserving its original aspect ratio.
+        Scale obstacle image to dashboard width while preserving aspect ratio.
+        The height is capped so the window stays usable.
         """
+        if img is None or img.size == 0:
+            return np.zeros((500, self.total_width, 3), dtype=np.uint8)
+
         img_copy = img.copy()
+
+        if len(img_copy.shape) == 2:
+            img_copy = cv2.cvtColor(img_copy, cv2.COLOR_GRAY2BGR)
+
         height, width = img_copy.shape[:2]
-        
-        if width == 0:
-            return np.zeros((self.top_size[1], self.total_width, 3), dtype=np.uint8)
+
+        if width == 0 or height == 0:
+            return np.zeros((500, self.total_width, 3), dtype=np.uint8)
+
+        max_obstacle_height = 520
 
         scale = self.total_width / width
+        new_width = self.total_width
         new_height = int(height * scale)
-        
-        return cv2.resize(img_copy, (self.total_width, new_height))
+
+        if new_height > max_obstacle_height:
+            new_height = max_obstacle_height
+            new_width = int(width * (new_height / height))
+
+        resized = cv2.resize(img_copy, (new_width, new_height))
+
+        canvas = np.zeros((max_obstacle_height, self.total_width, 3), dtype=np.uint8)
+        x_offset = (self.total_width - new_width) // 2
+        canvas[:new_height, x_offset:x_offset + new_width] = resized
+
+        return canvas
 
     def run(self):
         """Main loop to stitch and display the dashboard."""
@@ -120,33 +140,36 @@ class DashboardNode:
         font = cv2.FONT_HERSHEY_SIMPLEX
         
         cv2.namedWindow("Debug Dashboard", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Debug Dashboard", 1220, 760)
 
         while not rospy.is_shutdown():
             # Standardize components
             safe_lane = self._get_safe_top_image(self.img_lane)
             safe_white = self._get_safe_top_image(self.img_white)
             safe_yellow = self._get_safe_top_image(self.img_yellow)
-            safe_red = self._get_scaled_bottom_image(self.img_red)
+            safe_red = self._get_safe_top_image(self.img_red)
             safe_obstacle = self._get_scaled_bottom_image(self.img_obstacle)
 
             # Apply labels
             cv2.putText(safe_lane, "Annotated Lane", (10, 30), font, 0.7, (0, 255, 0), 2)
             cv2.putText(safe_white, "White Mask", (10, 30), font, 0.7, (255, 255, 255), 2)
             cv2.putText(safe_yellow, "Yellow Mask", (10, 30), font, 0.7, (0, 255, 255), 2)
-            cv2.putText(safe_red, "Red Mask (Original Ratio)", (10, 30), font, 0.7, (0, 0, 255), 2)
+            cv2.putText(safe_red, "Red Mask", (10, 30), font, 0.7, (0, 0, 255), 2)
             cv2.putText(safe_obstacle, "Obstacle Detection", (10, 30), font, 0.7, (0, 255, 255), 2)
 
             # Assemble dashboard
             top_row = cv2.hconcat([
-                safe_lane, self.pad_vertical, 
-                safe_white, self.pad_vertical, 
-                safe_yellow
+                safe_lane,
+                self.pad_vertical,
+                safe_white,
+                self.pad_vertical,
+                safe_yellow,
+                self.pad_vertical,
+                safe_red,
             ])
 
             dashboard = cv2.vconcat([
-                top_row, 
-                self.pad_horizontal, 
-                safe_red,
+                top_row,
                 self.pad_horizontal,
                 safe_obstacle
             ])

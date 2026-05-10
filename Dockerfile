@@ -22,7 +22,8 @@ RUN pip3 install --no-cache-dir --ignore-installed \
     "numpy<2.0" \
     torch torchvision \
     albumentations \
-    segmentation-models-pytorch
+    segmentation-models-pytorch \
+    ultralytics
 
 # 2. The GUI Fix! 
 # Albumentations automatically sneaks 'opencv-python-headless' in as a hidden dependency.

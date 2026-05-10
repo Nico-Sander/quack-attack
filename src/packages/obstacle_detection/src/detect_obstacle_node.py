@@ -2,11 +2,13 @@
 
 import os
 import json
+import time
 
 import cv2
 import numpy as np
 import rospy
 import torch
+from ultralytics import YOLO
 
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Float64, String
@@ -46,7 +48,7 @@ class DetectObstacleNode:
 
         # Strukturierte Detektionsinfo als JSON
         self.pub_obstacle = rospy.Publisher(
-            f"{base_topic}/detect/obstacle",
+            f"{base_topic}/detect/duckie_BB",
             String,
             queue_size=1
         )
@@ -104,17 +106,9 @@ class DetectObstacleNode:
         rospy.loginfo(f"[{self.node_name}] Loaded classes: {self.classes}")
 
     def load_model(self):
-        self.load_classes()
-
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(current_dir, "../models/obstacle_detector.pt")
-
-        # Im Container normalerweise: /workspace/external/yolov5
-        # Fallback funktioniert, wenn das Package unter /workspace/src/packages liegt.
-        yolov5_repo = os.environ.get(
-            "YOLOV5_REPO",
-            os.path.abspath(os.path.join(current_dir, "../../../../external/yolov5"))
-        )
+        
+        model_path = os.path.join(current_dir, "../models/YOLOv11_duckie_detection_modell.pt")
 
         if not os.path.exists(model_path):
             rospy.logwarn(
@@ -124,40 +118,26 @@ class DetectObstacleNode:
             self.model = None
             return
 
-        if not os.path.exists(yolov5_repo):
-            rospy.logwarn(
-                f"[{self.node_name}] YOLOv5 repo not found at {yolov5_repo}. "
-                f"Using mock detection."
-            )
-            self.model = None
-            return
-
-        rospy.loginfo(f"[{self.node_name}] Loading YOLOv5 model from {model_path}")
-        rospy.loginfo(f"[{self.node_name}] Using YOLOv5 repo at {yolov5_repo}")
+        rospy.loginfo(f"[{self.node_name}] Loading YOLOv11 model from {model_path}")
 
         try:
-            self.model = torch.hub.load(
-                yolov5_repo,
-                "custom",
-                path=model_path,
-                source="local",
-                force_reload=False
-            )
+            # YOLOv11 Modell direkt laden
+            self.model = YOLO(model_path)
+            
+            # Die Klassen direkt aus dem Modell auslesen (macht classes.txt überflüssig)
+            self.classes = list(self.model.names.values())
 
-            self.model.conf = float(self.confidence_threshold)
-            self.model.iou = 0.45
-
-            # GPU nutzen, falls vorhanden
+            # GPU nutzen, falls vorhanden (Ultralytics macht das oft automatisch, 
+            # aber wir loggen es zur Sicherheit)
             if torch.cuda.is_available():
-                self.model.cuda()
                 rospy.loginfo(f"[{self.node_name}] CUDA available. Using GPU.")
             else:
                 rospy.loginfo(f"[{self.node_name}] CUDA not available. Using CPU.")
 
-            rospy.loginfo(f"[{self.node_name}] YOLOv5 model loaded successfully.")
+            rospy.loginfo(f"[{self.node_name}] YOLOv11 model loaded successfully. Classes: {self.classes}")
 
         except Exception as e:
-            rospy.logerr(f"[{self.node_name}] Could not load YOLOv5 model: {e}")
+            rospy.logerr(f"[{self.node_name}] Could not load YOLOv11 model: {e}")
             self.model = None
 
     def cb_process_image(self, image_msg):
@@ -230,35 +210,44 @@ class DetectObstacleNode:
         if self.model is None:
             return self.mock_detect(img)
 
-        # OpenCV liefert BGR, YOLOv5 erwartet RGB
-        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
         try:
-            results = self.model(rgb_img, size=self.input_size)
+            start_time = time.time()
+            results = self.model(img, imgsz=self.input_size, verbose=False)
+            inference_time_ms = (time.time() - start_time) * 1000.0
+
+            rospy.loginfo_throttle(
+                1.0,
+                f"[{self.node_name}] YOLO inference time: {inference_time_ms:.1f} ms"
+            )
         except Exception as e:
-            rospy.logerr_throttle(1.0, f"[{self.node_name}] YOLO inference failed: {e}")
+            rospy.logerr_throttle(1.0, f"[{self.node_name}] YOLOv11 inference failed: {e}")
             return []
 
         detections = []
         h, w = img.shape[:2]
 
-        # YOLOv5 output: xmin, ymin, xmax, ymax, confidence, class_id
         try:
-            predictions = results.xyxy[0].cpu().numpy()
+            boxes = results[0].boxes
         except Exception as e:
-            rospy.logerr_throttle(1.0, f"[{self.node_name}] Could not parse YOLO output: {e}")
+            rospy.logerr_throttle(1.0, f"[{self.node_name}] Could not parse YOLOv11 output: {e}")
             return []
 
-        for pred in predictions:
-            xmin, ymin, xmax, ymax, conf, cls_id = pred
+        for box in boxes:
+            # Konfidenzwert auslesen (als float)
+            conf = float(box.conf[0].cpu().numpy())
+            
+            # Filtern: Wenn die Erkennung unsicher ist, ignorieren wir sie direkt
+            if conf < self.confidence_threshold:
+                continue
 
-            cls_id = int(cls_id)
+            # Koordinaten und Klassen-ID auslesen
+            xmin, ymin, xmax, ymax = box.xyxy[0].cpu().numpy()
+            cls_id = int(box.cls[0].cpu().numpy())
+            
+            # Klassenname aus dem Modell holen (z.B. "Duckie")
+            class_name = self.model.names.get(cls_id, str(cls_id))
 
-            if cls_id < len(self.classes):
-                class_name = self.classes[cls_id]
-            else:
-                class_name = str(cls_id)
-
+            # In relative Werte (0.0 bis 1.0) umrechnen, genau wie dein alter Code es erwartet
             x_center = ((xmin + xmax) / 2.0) / w
             y_center = ((ymin + ymax) / 2.0) / h
             box_width = (xmax - xmin) / w
@@ -266,7 +255,7 @@ class DetectObstacleNode:
 
             detections.append({
                 "class_name": class_name,
-                "confidence": float(conf),
+                "confidence": conf,
                 "x_center": float(x_center),
                 "y_center": float(y_center),
                 "width": float(box_width),
