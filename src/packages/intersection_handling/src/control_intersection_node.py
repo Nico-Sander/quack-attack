@@ -34,7 +34,7 @@ class ControlIntersectionNode:
         self.omega_left = 3.0
 
         self.v_right = 0.15
-        self.omega_right = -1.0
+        self.omega_right = -3.0
 
         self.v_straight = 0.18
         self.omega_straight = 0.0
@@ -62,7 +62,10 @@ class ControlIntersectionNode:
         rospy.on_shutdown(self.fnShutDown)
 
     def cbControl(self, msg):
-        self.active = msg.data == ControlType.Crossing.value
+        if msg.data == ControlType.Crossing.value:
+            self.active = True
+        else:
+            self.active = False
 
     def cbDirection(self, msg):
         if msg.data == "left":
