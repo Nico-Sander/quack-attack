@@ -34,7 +34,7 @@ class ControlIntersectionNode:
         self.omega_left = 3.0
 
         self.v_right = 0.15
-        self.omega_right = -3.0
+        self.omega_right = -1.0
 
         self.v_straight = 0.18
         self.omega_straight = 0.0

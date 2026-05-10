@@ -11,14 +11,17 @@
         </mxCell>
         <mxCell id="rmzx4RmnQM9AGbvZqSgZ-6" value="/vn/detect/lane [-1.0, 1.0]" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Times New Roman;" parent="rmzx4RmnQM9AGbvZqSgZ-5" connectable="0" vertex="1">
           <mxGeometry x="-0.1833" y="-1" relative="1" as="geometry">
-            <mxPoint x="140" y="-11" as="offset" />
+            <mxPoint x="50" y="-11" as="offset" />
           </mxGeometry>
         </mxCell>
         <mxCell id="VlO8yoQawZQyNlQzvU4W-22" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="rmzx4RmnQM9AGbvZqSgZ-1" target="VlO8yoQawZQyNlQzvU4W-3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VlO8yoQawZQyNlQzvU4W-25" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="rmzx4RmnQM9AGbvZqSgZ-1" target="rmzx4RmnQM9AGbvZqSgZ-9">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="860" y="180" />
-              <mxPoint x="860" y="720" />
+              <mxPoint x="502" y="230" />
+              <mxPoint x="700" y="230" />
             </Array>
           </mxGeometry>
         </mxCell>
@@ -65,18 +68,6 @@
         </mxCell>
         <mxCell id="rmzx4RmnQM9AGbvZqSgZ-9" value="&lt;div&gt;control_lane_node&lt;/div&gt;" style="ellipse;whiteSpace=wrap;html=1;fontFamily=Times New Roman;" parent="1" vertex="1">
           <mxGeometry x="640" y="480" width="120" height="80" as="geometry" />
-        </mxCell>
-        <mxCell id="rmzx4RmnQM9AGbvZqSgZ-10" value="" style="endArrow=classic;html=1;rounded=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontFamily=Times New Roman;jumpStyle=gap;jumpSize=13;" parent="1" target="rmzx4RmnQM9AGbvZqSgZ-9" edge="1">
-          <mxGeometry width="50" height="50" relative="1" as="geometry">
-            <mxPoint x="700" y="280" as="sourcePoint" />
-            <mxPoint x="540" y="350" as="targetPoint" />
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="rmzx4RmnQM9AGbvZqSgZ-11" value="" style="endArrow=none;html=1;rounded=0;fontFamily=Times New Roman;jumpStyle=gap;jumpSize=13;" parent="1" edge="1">
-          <mxGeometry width="50" height="50" relative="1" as="geometry">
-            <mxPoint x="460" y="280" as="sourcePoint" />
-            <mxPoint x="700" y="280" as="targetPoint" />
-          </mxGeometry>
         </mxCell>
         <mxCell id="b2WUlHgmpvVAkuUz7WpI-4" value="" style="endArrow=classic;html=1;rounded=0;entryX=0;entryY=0;entryDx=0;entryDy=0;fontFamily=Times New Roman;jumpStyle=gap;jumpSize=13;" parent="1" target="rmzx4RmnQM9AGbvZqSgZ-4" edge="1">
           <mxGeometry width="50" height="50" relative="1" as="geometry">
@@ -185,6 +176,11 @@
         </mxCell>
         <mxCell id="VlO8yoQawZQyNlQzvU4W-23" value="/vn/detect/lane [-1.0, 1.0]" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Times New Roman;" connectable="0" vertex="1" parent="1">
           <mxGeometry x="640" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="VlO8yoQawZQyNlQzvU4W-26" value="/vn/detect/lane_borders [String]" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontFamily=Times New Roman;" connectable="0" vertex="1" parent="1">
+          <mxGeometry x="570" y="210" as="geometry">
+            <mxPoint x="21" y="10" as="offset" />
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>

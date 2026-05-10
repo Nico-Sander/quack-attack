@@ -6,12 +6,12 @@ Outputs a cross-track error to keep the vehicle centered.
 """
 
 import os
-
+import json
 import cv2
 import numpy as np
 import rospy
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, String
 import torch
 import segmentation_models_pytorch as smp
 import torchvision.transforms.functional as TF
@@ -58,6 +58,12 @@ class DetectLaneNode:
         )
         self.pub_lane = rospy.Publisher(
             f"{base_topic}/detect/lane", Float64, queue_size=1
+        )
+
+        self.pub_lane_borders = rospy.Publisher(
+            f"{base_topic}/detect/lane_borders", 
+            String, 
+            queue_size=1
         )
 
         # Debug Publishers
@@ -194,6 +200,17 @@ class DetectLaneNode:
         msg_error.data = 1.0 - (lane_center / self._target_im_size * 2.0)
         self.pub_lane.publish(msg_error)
         #print(f"Lane error: {msg_error.data:.4f} range [-1,1]")
+
+        lane_borders_msg = String()
+
+        lane_borders_msg.data = json.dumps({
+            "yellow_x": float(center_yellow / self._target_im_size),
+            "white_x": float(center_white / self._target_im_size),
+            "lane_center_x": float(lane_center / self._target_im_size),
+            "valid": bool(center_white > center_yellow)
+        })
+
+        self.pub_lane_borders.publish(lane_borders_msg)
 
         # 4. Save state for debugging thread
         resized_bgr = cv2.resize(cropped_img, (self._target_im_size, self._target_im_size))
