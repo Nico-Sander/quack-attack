@@ -20,6 +20,11 @@ class TurnDirection(Enum):
     RIGHT = 3
 
 
+class CrossingPhase(Enum):
+    STRAIGHT_BEFORE_TURN = 1
+    TURNING = 2
+
+
 class ControlIntersectionNode:
     def __init__(self, node_name):
         rospy.init_node(node_name)
@@ -29,7 +34,18 @@ class ControlIntersectionNode:
         self.active = False
         self.turn_direction = TurnDirection.RIGHT
 
-        # Startwerte, später kalibrieren
+        self.phase = CrossingPhase.STRAIGHT_BEFORE_TURN
+        self.phase_start_time = 0.0
+
+        # Geradeausphase vor dem eigentlichen Abbiegen
+        self.pre_turn_v = 0.15
+        self.pre_turn_omega = 0.0
+
+        self.pre_turn_duration_left = 1.2
+        self.pre_turn_duration_right = 1.0
+        self.pre_turn_duration_straight = 0.0
+
+        # Abbiegebewegungen
         self.v_left = 0.15
         self.omega_left = 3.0
 
@@ -63,6 +79,10 @@ class ControlIntersectionNode:
 
     def cbControl(self, msg):
         if msg.data == ControlType.Crossing.value:
+            if not self.active:
+                self.phase = CrossingPhase.STRAIGHT_BEFORE_TURN
+                self.phase_start_time = rospy.Time.now().to_sec()
+
             self.active = True
         else:
             self.active = False
@@ -74,6 +94,14 @@ class ControlIntersectionNode:
             self.turn_direction = TurnDirection.STRAIGHT
         elif msg.data == "right":
             self.turn_direction = TurnDirection.RIGHT
+
+    def getPreTurnDuration(self):
+        if self.turn_direction == TurnDirection.LEFT:
+            return self.pre_turn_duration_left
+        elif self.turn_direction == TurnDirection.RIGHT:
+            return self.pre_turn_duration_right
+        else:
+            return self.pre_turn_duration_straight
 
     def fnShutDown(self):
         rospy.loginfo("Shutting down intersection controller.")
@@ -87,20 +115,31 @@ class ControlIntersectionNode:
 
         while not rospy.is_shutdown():
             if self.active:
+                current_time = rospy.Time.now().to_sec()
+
                 twist = Twist2DStamped()
                 twist.header.stamp = rospy.Time.now()
 
-                if self.turn_direction == TurnDirection.LEFT:
-                    twist.v = self.v_left
-                    twist.omega = self.omega_left
+                if self.phase == CrossingPhase.STRAIGHT_BEFORE_TURN:
+                    twist.v = self.pre_turn_v
+                    twist.omega = self.pre_turn_omega
 
-                elif self.turn_direction == TurnDirection.RIGHT:
-                    twist.v = self.v_right
-                    twist.omega = self.omega_right
+                    if (current_time - self.phase_start_time) >= self.getPreTurnDuration():
+                        self.phase = CrossingPhase.TURNING
+                        self.phase_start_time = current_time
 
-                else:
-                    twist.v = self.v_straight
-                    twist.omega = self.omega_straight
+                elif self.phase == CrossingPhase.TURNING:
+                    if self.turn_direction == TurnDirection.LEFT:
+                        twist.v = self.v_left
+                        twist.omega = self.omega_left
+
+                    elif self.turn_direction == TurnDirection.RIGHT:
+                        twist.v = self.v_right
+                        twist.omega = self.omega_right
+
+                    else:
+                        twist.v = self.v_straight
+                        twist.omega = self.omega_straight
 
                 self.pub_cmd_vel.publish(twist)
 

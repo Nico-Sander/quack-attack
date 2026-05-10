@@ -56,7 +56,7 @@ class SwitchControlNode:
 
         # TODO for testing purposes, always turn right at the intersection
         self.turn_direction = TurnDirection.RIGHT
-        self.turn_duration = 1.2
+        self.turn_duration = 2.0
 
     # ========================================================================
     # Sensor Callbacks (no logic allowed here)
