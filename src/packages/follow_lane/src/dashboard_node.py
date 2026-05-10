@@ -35,6 +35,9 @@ class DashboardNode:
         # Red placeholder starts wide to matche total_width for vconcat safety
         self.img_red = np.zeros((self.top_size[1], self.total_width, 3), dtype=np.uint8)
 
+        # Obstacle placeholder
+        self.img_obstacle = np.zeros((self.top_size[1], self.total_width, 3), dtype=np.uint8)
+
         # Define visual separators (dark gray)
         self.pad_vertical = np.full((self.top_size[1], 10, 3), 50, dtype=np.uint8)
         self.pad_horizontal = np.full((10, self.total_width, 3), 50, dtype=np.uint8)
@@ -52,6 +55,9 @@ class DashboardNode:
         )
         rospy.Subscriber(
             f"{base_topic}/lane_red", CompressedImage, self.cb_red, queue_size=1
+        )
+        rospy.Subscriber(
+            f"{base_topic}/obstacle_detection", CompressedImage, self.cb_obstacle, queue_size=1
         )
 
     def decode_image(self, msg):
@@ -81,6 +87,10 @@ class DashboardNode:
     def cb_red(self, msg: CompressedImage):
         """Callback for red mask image."""
         self.img_red = self.decode_image(msg)
+
+    def cb_obstacle(self, msg: CompressedImage):
+        """Callback for obstacle detection debug image."""
+        self.img_obstacle = self.decode_image(msg)
 
     def _get_safe_top_image(self, img: np.ndarray) -> np.ndarray:
         """Force top-row images to exact defined dimensions."""
@@ -117,12 +127,14 @@ class DashboardNode:
             safe_white = self._get_safe_top_image(self.img_white)
             safe_yellow = self._get_safe_top_image(self.img_yellow)
             safe_red = self._get_scaled_bottom_image(self.img_red)
+            safe_obstacle = self._get_scaled_bottom_image(self.img_obstacle)
 
             # Apply labels
             cv2.putText(safe_lane, "Annotated Lane", (10, 30), font, 0.7, (0, 255, 0), 2)
             cv2.putText(safe_white, "White Mask", (10, 30), font, 0.7, (255, 255, 255), 2)
             cv2.putText(safe_yellow, "Yellow Mask", (10, 30), font, 0.7, (0, 255, 255), 2)
             cv2.putText(safe_red, "Red Mask (Original Ratio)", (10, 30), font, 0.7, (0, 0, 255), 2)
+            cv2.putText(safe_obstacle, "Obstacle Detection", (10, 30), font, 0.7, (0, 255, 255), 2)
 
             # Assemble dashboard
             top_row = cv2.hconcat([
@@ -134,7 +146,9 @@ class DashboardNode:
             dashboard = cv2.vconcat([
                 top_row, 
                 self.pad_horizontal, 
-                safe_red
+                safe_red,
+                self.pad_horizontal,
+                safe_obstacle
             ])
 
             # Render
