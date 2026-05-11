@@ -22,7 +22,7 @@ class TurnDirection(Enum):
 
 class CrossingPhase(Enum):
     STRAIGHT_BEFORE_TURN = 1
-    TURNING = 2
+    INITIAL_TURNING = 2
 
 
 class ControlIntersectionNode:
@@ -37,23 +37,23 @@ class ControlIntersectionNode:
         self.phase = CrossingPhase.STRAIGHT_BEFORE_TURN
         self.phase_start_time = 0.0
 
-        # Geradeausphase vor dem eigentlichen Abbiegen
-        self.pre_turn_v = 0.15
-        self.pre_turn_omega = 0.0
+        # Straight (before turn)
+        self.straight_before_turn_v = 0.15
+        self.straight_before_turn_omega = 0.0
 
-        self.pre_turn_duration_left = 0.0
-        self.pre_turn_duration_right = 1.0
-        self.pre_turn_duration_straight = 0.0
+        self.straight_before_turn_duration_left = 0.0
+        self.straight_before_turn_duration_right = 0.8
+        self.straight_before_turn_duration_straight = 0.0
 
-        # Abbiegebewegungen
-        self.v_left = 0.3
-        self.omega_left = 0.85
+        # Initial turn movements
+        self.initial_turn_left_v = 0.3
+        self.initial_turn_left_omega = 0.85
 
-        self.v_right = 0.25
-        self.omega_right = -3.0
+        self.initial_turn_right_v = 0.25
+        self.initial_turn_right_omega = -3.0
 
-        self.v_straight = 0.25
-        self.omega_straight = 0.0
+        self.initial_turn_straight_v = 0.25
+        self.initial_turn_straight_omega = 0.0
 
         self.pub_cmd_vel = rospy.Publisher(
             f"/{self._vehicle_name}/car_cmd_switch_node/cmd",
@@ -97,7 +97,7 @@ class ControlIntersectionNode:
 
     def getPreTurnDuration(self):
         if self.turn_direction == TurnDirection.LEFT:
-            return self.pre_turn_duration_left
+            return self.straight_before_turn_duration_left
         elif self.turn_direction == TurnDirection.RIGHT:
             return self.pre_turn_duration_right
         else:
@@ -121,17 +121,17 @@ class ControlIntersectionNode:
                 twist.header.stamp = rospy.Time.now()
 
                 if self.phase == CrossingPhase.STRAIGHT_BEFORE_TURN:
-                    twist.v = self.pre_turn_v
-                    twist.omega = self.pre_turn_omega
+                    twist.v = self.straight_before_turn_v
+                    twist.omega = self.traight_before_turn_omega
 
                     if (current_time - self.phase_start_time) >= self.getPreTurnDuration():
-                        self.phase = CrossingPhase.TURNING
+                        self.phase = CrossingPhase.INITIAL_TURNING
                         self.phase_start_time = current_time
 
-                elif self.phase == CrossingPhase.TURNING:
+                elif self.phase == CrossingPhase.INITIAL_TURNING:
                     if self.turn_direction == TurnDirection.LEFT:
-                        twist.v = self.v_left
-                        twist.omega = self.omega_left
+                        twist.v = self.initial_turn_left_v
+                        twist.omega = self.turn_left_omega
 
                     elif self.turn_direction == TurnDirection.RIGHT:
                         twist.v = self.v_right
