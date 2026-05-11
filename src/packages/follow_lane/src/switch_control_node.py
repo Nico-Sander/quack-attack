@@ -34,7 +34,7 @@ class SwitchControlNode:
         ## Subscirbers
         self.sub_duckie = rospy.Subscriber(f"/{self._vehicle_name}/detect/duckie", Float64, self.cbDuckieDetected, queue_size = 1)
         self.sub_lane = rospy.Subscriber(f"/{self._vehicle_name}/detect/lane", Float64, self.cbLaneDetected, queue_size = 1)
-        self.sub_intersection = rospy.Subscriber(f"/{self._vehicle_name}/detect/intersection", Bool, self.cbIntersectionDetected, queue_size = 1)
+        self.sub_intersection = rospy.Subscriber(f"/{self._vehicle_name}/detect/intersection", Int32, self.cbIntersectionDetected, queue_size = 1)
         self.sub_sign = rospy.Subscriber(f"/{self._vehicle_name}/detect/sign", Int32, self.cbSignDetected, queue_size=1
 )
 
