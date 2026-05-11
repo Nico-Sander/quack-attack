@@ -53,12 +53,16 @@ class SwitchControlNode:
         self.state_timer = 0.0
         self.stop_duration = 3.0
 
+        ## Timer variavle for crossing phases
+        self.ignore_red_line_until = 0.0
+        self.red_line_ignore_duration = 4.0
+
         self.left_turn_duration = 2.0
         self.right_turn_duration = 1.2
-        self.straight_duration = 1.0
+        self.straight_duration = 2.0
 
         # TODO for testing purposes, always turn right at the intersection
-        self.turn_direction = TurnDirection.RIGHT
+        self.turn_direction = TurnDirection.LEFT
         
 
     # ========================================================================
@@ -74,7 +78,7 @@ class SwitchControlNode:
         # Decision / random generation of TurnDirection
 
         # for testing purposes, always turn right at the intersection
-        self.turn_direction = TurnDirection.RIGHT
+        self.turn_direction = TurnDirection.LEFT
         pass
 
     def cbDuckieDetected(self, msg):
@@ -107,7 +111,7 @@ class SwitchControlNode:
 
             if self.state == State.LANE_FOLLOWING:
                 # Event: Red Line observed
-                if self.red_line_visible:
+                if self.red_line_visible and current_time >= self.ignore_red_line_until:
                     rospy.loginfo("State -> AT_STOP_LINE")
                     self.state = State.AT_STOP_LINE
                     self.state_timer = current_time
@@ -119,7 +123,7 @@ class SwitchControlNode:
                     self.state = State.CROSSING
                     self.state_timer = current_time
                     # TODO for testing purposes
-                    self.turn_direction = TurnDirection.RIGHT
+                    self.turn_direction = TurnDirection.LEFT
 
                     if self.turn_direction == TurnDirection.LEFT:
                         self.turn_duration = self.left_turn_duration
@@ -133,6 +137,7 @@ class SwitchControlNode:
                     rospy.loginfo("State -> CROSSING_CLEARING")
                     self.state = State.CROSSING_CLEARING
                     self.state_timer = current_time
+                    self.ignore_red_line_until = current_time + self.red_line_ignore_duration
 
             elif self.state == State.CROSSING_CLEARING:
                 # Event: Red line is no longer visible (Falling Edge)

@@ -47,7 +47,7 @@ class ControlIntersectionNode:
 
         # Initial turn movements
         self.initial_turn_left_v = 0.3
-        self.initial_turn_left_omega = 0.85
+        self.initial_turn_left_omega = 1.25
 
         self.initial_turn_right_v = 0.25
         self.initial_turn_right_omega = -3.0
@@ -122,7 +122,7 @@ class ControlIntersectionNode:
 
                 if self.phase == CrossingPhase.STRAIGHT_BEFORE_TURN:
                     twist.v = self.straight_before_turn_v
-                    twist.omega = self.traight_before_turn_omega
+                    twist.omega = self.straight_before_turn_omega
 
                     if (current_time - self.phase_start_time) >= self.getPreTurnDuration():
                         self.phase = CrossingPhase.INITIAL_TURNING
@@ -131,15 +131,15 @@ class ControlIntersectionNode:
                 elif self.phase == CrossingPhase.INITIAL_TURNING:
                     if self.turn_direction == TurnDirection.LEFT:
                         twist.v = self.initial_turn_left_v
-                        twist.omega = self.turn_left_omega
+                        twist.omega = self.initial_turn_left_omega
 
                     elif self.turn_direction == TurnDirection.RIGHT:
-                        twist.v = self.v_right
-                        twist.omega = self.omega_right
+                        twist.v = self.initial_turn_right_v
+                        twist.omega = self.initial_turn_right_omega
 
                     else:
-                        twist.v = self.v_straight
-                        twist.omega = self.omega_straight
+                        twist.v = self.initial_turn_straight_v
+                        twist.omega = self.initial_turn_straight_omega
 
                 self.pub_cmd_vel.publish(twist)
 
