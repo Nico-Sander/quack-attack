@@ -2,31 +2,11 @@
 
 import rospy
 from std_msgs.msg import Float64, Int32, Bool, String
-from enum import Enum
 from detect_intersection import IntersectionState
+from custom_enums import ControlType, State, TurnDirection
 
 import os
 
-# External Commands: What the motor controllers should do
-class ControlType(Enum):
-    LANE_FOLLOWING = 1
-    FIND_STOP_LINE = 2
-    STOP = 3
-    DRIVE_INTERSECTION = 4
-
-# Internal States: The phases of the brains decision making
-class State(Enum):
-    LANE_FOLLOWING = 1
-    APPROACHING = 2
-    STOPPED = 3
-    CROSSING = 4
-    CLEARING = 5
-
-# 
-class TurnDirection(Enum):
-    LEFT = 1
-    STRAIGHT = 2
-    RIGHT = 3
 
 class SwitchControlNode:
     def __init__(self,node_name):
@@ -43,7 +23,7 @@ class SwitchControlNode:
 
         ## Publishers
         self.pub_control = rospy.Publisher(f"/{self._vehicle_name}/switch/control", Int32, queue_size = 1)
-        self.pub_turn_direction = rospy.Publisher(f"/{self._vehicle_name}/switch/turn_direction", String, queue_size=1)
+        self.pub_turn_direction = rospy.Publisher(f"/{self._vehicle_name}/switch/turn_direction", Int32, queue_size=1)
 
         
         ## State Machine Initialization
@@ -65,7 +45,7 @@ class SwitchControlNode:
         self.straight_duration = 2.0
 
         # TODO for testing purposes, always turn right at the intersection
-        self.turn_direction = TurnDirection.LEFT
+        self.turn_direction = TurnDirection.STRAIGHT
         
 
     # ========================================================================
@@ -76,7 +56,7 @@ class SwitchControlNode:
         try:
             # This looks up the Enum member by its value (0, 1, or 2)
             self.current_intersection_state = IntersectionState(msg.data)
-            rospy.loginfo(f"State updated to: {self.current_intersection_state.name}")
+            # rospy.loginfo(f"State updated to: {self.current_intersection_state.name}")
         except ValueError:
             rospy.logwarn(f"Received invalid intersection state value: {msg.data}")
 
@@ -99,15 +79,8 @@ class SwitchControlNode:
     # Logic 
     # ========================================================================
     def publishTurnDirection(self):
-        msg_dir = String()
-
-        if self.turn_direction == TurnDirection.LEFT:
-            msg_dir.data = "left"
-        elif self.turn_direction == TurnDirection.STRAIGHT:
-            msg_dir.data = "straight"
-        else:
-            msg_dir.data = "right"
-
+        msg_dir = Int32()
+        msg_dir.data = self.turn_direction.value
         self.pub_turn_direction.publish(msg_dir)
     
     def run(self):

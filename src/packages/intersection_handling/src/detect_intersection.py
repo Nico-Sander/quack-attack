@@ -13,12 +13,8 @@ import rospy
 import util
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Int32
-from enum import Enum
 
-class IntersectionState(Enum):
-    NO_INTERSECTION = 0
-    APPROACHING_INTERSECTION = 1
-    AT_INTERSECTION = 2
+from custom_enums import IntersectionState
 
 
 class DetectIntersectionNode:

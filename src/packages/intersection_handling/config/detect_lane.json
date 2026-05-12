@@ -40,9 +40,9 @@
             "hh": {"default": 179, "min": 160, "max": 179},
             "hl": {"default": 160, "min": 150, "max": 179},
             "sh": {"default": 255, "min": 0, "max": 255},
-            "sl": {"default": 100, "min": 0, "max": 255},
+            "sl": {"default": 80, "min": 0, "max": 255},
             "vh": {"default": 255, "min": 0, "max": 255},
-            "vl": {"default": 100, "min": 0, "max": 255}
+            "vl": {"default": 80, "min": 0, "max": 255}
         }
     }
 }

@@ -1,0 +1,14 @@
+<launch>
+    <!-- AI Lane Detection (Slower startup) -->
+    <node pkg="intersection_handling" type="detect_lane.py" name="detect_lane" output="screen" />
+
+    <!-- Intersection & Control Logic -->
+    <node pkg="intersection_handling" type="detect_intersection.py" name="detect_intersection" />
+    <node pkg="intersection_handling" type="switch_control.py" name="switch_control" output="screen"/>
+    
+    <!-- Hardware Control -->
+    <node pkg="intersection_handling" type="control_wheels.py" name="control_wheels" output="screen" />
+
+    <!-- Dashboard/UI -->
+    <node pkg="follow_lane" type="dashboard_node.py" name="dashboard_node" />
+</launch>
