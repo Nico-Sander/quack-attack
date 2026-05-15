@@ -6,34 +6,26 @@
             "i": 0.0,
             "d": 1.0,
             "d_slow": 0.5,
+            "p_angle": 2.5,
             "max_vel": 0.2
         },
         "approach_speed_multiplier": 0.3,
         "intersection": {
-            "straight_before_turn": {"v": 0.15, "omega": 0.0},
+            "straight_before_turn": {"v": 0.2, "omega": 0.0},
             "durations": {
-                "LEFT": 0.0,
-                "RIGHT": 0.25,
-                "STRAIGHT": 0.0
+                "LEFT": 0.4,
+                "RIGHT": 0.7,
+                "STRAIGHT": 0.2
             },
             "initial_turn": {
-                "LEFT": {"v": 0.3, "omega": 1.25},
-                "RIGHT": {"v": 0.25, "omega": -3.5},
-                "STRAIGHT": {"v": 0.25, "omega": 0.0}
+                "LEFT": {"v": 0.2, "omega": 2.0},
+                "RIGHT": {"v": 0.2, "omega": -3.5},
+                "STRAIGHT": {"v": 0.2, "omega": 0.0}
             }
         }
     },
     "detect_intersection": {
-        "pixel_thresholds": {
-            "approaching": 1000,
-            "at_intersection": 1000,
-            "clear": 50
-        },
-        "hsv": {
-            "hue_l": 160, "hue_h": 179,
-            "sat_l": 100, "sat_h": 255,
-            "val_l": 100, "val_h": 255
-        }
+       "stop_y_threshold": 0.95 
     },
     "detect_lane": {
         "lane_search_y_ratio": 0.25,
@@ -42,11 +34,11 @@
     "switch_control": {
         "timers": {
             "stop_duration": 3.0,
-            "red_line_ignore_duration": 4.0,
+            "red_line_ignore_duration": 1.5,
             "turn_durations": {
-                "LEFT": 2.0,
-                "RIGHT": 1.2,
-                "STRAIGHT": 2.0
+                "LEFT": 2.5,
+                "RIGHT": 1.0,
+                "STRAIGHT": 1.5
             }
         }
     }

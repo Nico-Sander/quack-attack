@@ -1185,6 +1185,7 @@
   street_name:
   vehicle_name:
   traffic_sign_type: 4-way-intersect
+  allowed_directions: [left, right, straight]
 
 - tag_id: 198
   tag_type: TrafficSign

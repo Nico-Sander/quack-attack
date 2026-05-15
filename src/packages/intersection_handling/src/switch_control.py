@@ -7,6 +7,8 @@ Subscribes to perception nodes and commands the driver node via DriveMode.
 
 import os
 import json
+import yaml
+import random
 import rospy
 from std_msgs.msg import Float64, Int32, String
 from detect_intersection import IntersectionState
@@ -22,13 +24,30 @@ class SwitchControlNode:
 
         self.config = self._load_config()
 
+        # Load AprilTag DB to translate IDs into Sign Types
+        node_dir = os.path.dirname(os.path.abspath(__file__))
+        self.db_path = rospy.get_param("~apriltags_db_path", os.path.join(node_dir, "apriltagsDB.yaml"))
+        self.sign_db = self._load_sign_db(self.db_path)
+
+        # Dictionary mapping sign types to allowed TurnDirections
+        self.allowed_directions_map = {
+            "left-T-intersect": [TurnDirection.LEFT, TurnDirection.STRAIGHT],
+            "right-T-intersect": [TurnDirection.RIGHT, TurnDirection.STRAIGHT],
+            "T-intersection": [TurnDirection.LEFT, TurnDirection.RIGHT],
+            "4-way-intersect": [TurnDirection.LEFT, TurnDirection.RIGHT, TurnDirection.STRAIGHT],
+            # If it's a generic stop/yield but we are at an intersection, default to all ways
+            "stop": [TurnDirection.LEFT, TurnDirection.RIGHT, TurnDirection.STRAIGHT],
+            "yield": [TurnDirection.LEFT, TurnDirection.RIGHT, TurnDirection.STRAIGHT]
+        }
+
         # Subscribers (Perception)
         self.sub_intersection = rospy.Subscriber(
             f"/{self._vehicle_name}/detect/intersection", Int32, self._cb_intersection, queue_size=1
         )
         self.sub_sign = rospy.Subscriber(
-            f"/{self._vehicle_name}/detect/sign", String, self._cb_sign, queue_size=1
+            f"/{self._vehicle_name}/detect/sign", Int32, self._cb_sign, queue_size=1
         )
+        
 
         # Publishers (Commands)
         self.pub_mode = rospy.Publisher(f"/{self._vehicle_name}/switch/mode", Int32, queue_size=1)
@@ -36,8 +55,11 @@ class SwitchControlNode:
 
         # State Variables
         self.mode = DriveMode.LANE_FOLLOWING
-        self.turn_direction = TurnDirection.RIGHT
-        
+
+        # Turn Direction Tracking
+        self.planned_turn_direction = None
+        self.turn_direction = TurnDirection.STRAIGHT        
+
         # Timers
         self.state_timer = 0.0
         self.ignore_red_line_until = 0.0
@@ -65,45 +87,36 @@ class SwitchControlNode:
         except ValueError:
             rospy.logwarn(f"Invalid intersection state: {msg.data}")
 
-    #def _cb_sign(self, msg):
-        # TODO: Implement sign logic. Defaulting to left turn for testing.
-        #self.turn_direction = TurnDirection.LEFT
-        #self.turn_direction = TurnDirection.RIGHT
+    def _load_sign_db(self, path):
+        """Extracts just the tag_id to traffic_sign_type mapping."""
+        try:
+            with open(path, "r") as f:
+                data = yaml.safe_load(f)
+            # Create a dictionary of {tag_id: traffic_sign_type}
+            return {int(e["tag_id"]): e.get("traffic_sign_type", "") for e in data}
+        except Exception as e:
+            rospy.logwarn(f"Could not load AprilTags DB in switch_control: {e}")
+            return {}
 
     def _cb_sign(self, msg):
         """
-        Debug sign callback:
-        - Parses JSON from DetectIntersectionSignNode
-        - Forces deterministic behavior:
-            T-Intersection  -> RIGHT
-            4-Way           -> LEFT
+        Looks up the received ID, determines allowed directions, 
+        and locks in a random choice if we are approaching an intersection.
         """
+        tag_id = msg.data
+        sign_type = self.sign_db.get(tag_id, "")
 
-        try:
-            data = json.loads(msg.data)
-
-            traffic_sign_type = data.get("traffic_sign_type", "")
-            tag_id = data.get("tag_id", -1)
-
-            rospy.loginfo(f"[SIGN DEBUG] tag_id={tag_id}, type={traffic_sign_type}")
-
-            # ----------------------------------------------------
-            # DEBUG OVERRIDE LOGIC (ignore DB decision logic)
-            # ----------------------------------------------------
-
-            if self.current_intersection_state == IntersectionState.T_INTERSECTION:
-                self.turn_direction = TurnDirection.RIGHT
-                rospy.loginfo("[SIGN DEBUG] T-Intersection → FORCE RIGHT")
-
-            elif self.current_intersection_state == IntersectionState.FOUR_WAY:
-                self.turn_direction = TurnDirection.LEFT
-                rospy.loginfo("[SIGN DEBUG] 4-Way → FORCE LEFT")
-
-            else:
-                rospy.loginfo("[SIGN DEBUG] No intersection → keeping current direction")
-
-        except json.JSONDecodeError:
-            rospy.logwarn("[SIGN DEBUG] Invalid JSON received")
+        # Only process if this sign actually dictates intersection routing
+        if sign_type in self.allowed_directions_map:
+            # Only update our plan if we are currently driving/approaching. 
+            # This prevents us from reading a sign while crossing and messing up the NEXT intersection.
+            if self.mode in [DriveMode.LANE_FOLLOWING, DriveMode.APPROACHING_STOP_LINE]:
+                # Only plan a turn if none has been locked in yet
+                if self.planned_turn_direction is None:
+                    allowed = self.allowed_directions_map[sign_type]
+                    self.planned_turn_direction = random.choice(allowed)
+                    
+                    rospy.loginfo(f"Locked in {sign_type} (ID {tag_id}). Planned turn: {self.planned_turn_direction.name}")
 
     def run(self):
         """Main control loop."""
@@ -131,6 +144,14 @@ class SwitchControlNode:
                 if (current_time - self.state_timer) >= self.config["timers"]["stop_duration"]:
                     self.mode = DriveMode.CROSSING_INTERSECTION
                     self.state_timer = current_time
+
+                    # Apply planned turn direction
+                    if self.planned_turn_direction is not None:
+                        self.turn_direction = self.planned_turn_direction
+                    else:
+                        # Fallback if the sign was missed
+                        self.turn_direction = TurnDirection.STRAIGHT
+                        rospy.logwarn("Missed intersection sign! Defaulting to straight")
                     
                     # Look up duration dynamically based on direction enum name
                     durations = self.config["timers"]["turn_durations"]
@@ -140,6 +161,9 @@ class SwitchControlNode:
                 if (current_time - self.state_timer) >= self.turn_duration:
                     self.mode = DriveMode.LANE_FOLLOWING
                     self.ignore_red_line_until = current_time + self.config["timers"]["red_line_ignore_duration"]
+
+                    # Reset planned durn 
+                    self.planned_turn_direction = None
 
             # --- Action Publishing ---
             self.pub_mode.publish(Int32(data=self.mode.value))

@@ -55,7 +55,7 @@ class SwitchControlNode:
 
         ## Timer variavle for crossing phases
         self.ignore_red_line_until = 0.0
-        self.red_line_ignore_duration = 4.0
+        self.red_line_ignore_duration = 2.0
 
         self.left_turn_duration = 2.0
         self.right_turn_duration = 1.2

@@ -7,8 +7,8 @@ ROS node for controlling physical wheel commands based on DriveMode.
 import os
 import json
 import rospy
-from std_msgs.msg import Float64, Int32
-from duckietown_msgs.msg import Twist2DStamped
+from std_msgs.msg import Float64, Int32, String
+from duckietown_msgs.msg import Twist2DStamped, FSMState
 from custom_enums import DriveMode, IntersectionPhase, TurnDirection
 
 class ControlWheelsNode:
@@ -33,11 +33,24 @@ class ControlWheelsNode:
         self.v = 0.0
         self.omega = 0.0
 
+        self.red_detected = False
+        self.red_distance_y = 0.0
+        self.red_angle = 0.0
+
         # Topics
         base = f"/{self._vehicle_name}"
-        self.pub_cmd_vel = rospy.Publisher(f"{base}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
+        self.pub_cmd_vel = rospy.Publisher(f"{base}/lane_controller_node/car_cmd", Twist2DStamped, queue_size=1)
+        self.pub_fsm = rospy.Publisher(f"{base}/fsm_node/mode", FSMState, queue_size=1, latch=True)
+
+        # Publish the state immediately so the Duckiebot listens to your lane controller
+        fsm_msg = FSMState()
+        fsm_msg.state = "LANE_FOLLOWING"
+        self.pub_fsm.publish(fsm_msg)
+        rospy.loginfo("Forced Duckiebot FSM to LANE_FOLLOWING mode.")
         
         self.sub_lane = rospy.Subscriber(f"{base}/detect/lane", Float64, self._cb_lane, queue_size=1)
+        self.sub_borders = rospy.Subscriber(f"{base}/detect/lane_borders", String, self._cb_borders, queue_size=1)
+
         self.sub_mode = rospy.Subscriber(f"{base}/switch/mode", Int32, self._cb_mode, queue_size=1)
         self.sub_turn = rospy.Subscriber(f"{base}/switch/turn_direction", Int32, self._cb_direction, queue_size=1)
 
@@ -52,6 +65,16 @@ class ControlWheelsNode:
         except (FileNotFoundError, KeyError) as e:
             rospy.logerr(f"Missing config.json parameters: {e}")
             rospy.signal_shutdown("Missing required config.")
+
+    def _cb_borders(self, msg):
+        """Extracts geometric features from the semantic masks"""
+        try:
+            data = json.loads(msg.data)
+            self.red_detected = data.get("red_detected", False)
+            self.red_distance_y = data.get("red_distance_y", 0.0)
+            self.red_angle = data.get("red_angle", 0.0)
+        except json.JSONDecodeError:
+            pass
 
     def _cb_direction(self, msg):
         try:
@@ -101,22 +124,38 @@ class ControlWheelsNode:
         dt = current_time - self.last_time
         
         if dt > 0.0:
-            # PID Calculation
+            # Standard Lane Centering PID
             p_term = kp * error
-            
             self.integral += error * dt
             self.integral = max(min(self.integral, 1.0), -1.0)
-            
             i_term = self.config["pid"]["i"] * self.integral
             d_term = kd * ((error - self.last_error) / dt)
 
-            omega = max(min(p_term + i_term + d_term, 5.0), -5.0)
+            omega_lane = max(min(p_term + i_term + d_term, 5.0), -5.0)
+
+            # Dynamic Red-Line Squaring
+            if self.active_mode == DriveMode.APPROACHING_STOP_LINE and self.red_detected:
+                # Calculate blending weight (0.0 when far, 1.0 when at the line)
+                start_blend_y = 0.40 # Start caring about angle when line is 40% down image
+                stop_y = 0.92        # Match this roughly to your intersection threshold
+                
+                progress = (self.red_distance_y - start_blend_y) / (stop_y - start_blend_y)
+                blend_weight = max(0.0, min(1.0, progress))
+
+                # Calculate Angle Error
+                # If line slopes down-right (+ angle), robot is facing too far left. Turn Right (- omega).
+                kp_angle = self.config["pid"].get("p_angle", 2.5)
+                omega_angle = -1.0 * kp_angle * self.red_angle
+
+                # Blend the two steering commands
+                omega_final = (omega_lane * (1.0 - blend_weight)) + (omega_angle * blend_weight)
+            else:
+                omega_final = omega_lane
+
+            self.omega = max(min(omega_final, 5.0), -5.0)
 
             # Linear Velocity Calculation
-            velocity = max(max_vel * (1.0 - (abs(error) * 0.7)), 0.04)
-
-            self.v = velocity
-            self.omega = omega
+            self.v = max(max_vel * (1.0 - (abs(error) * 0.7)), 0.04)
 
         self.last_error = error
         self.last_time = current_time

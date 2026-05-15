@@ -23,8 +23,11 @@ class DetectLaneNode:
         rospy.init_node(node_name)
 
         # Configuration Constants
-        self.lane_search_y_ratio = 0.25
-        self._target_im_size = 192 
+        self.config = self._load_config()
+        self.lane_search_y_ratio = self.config["lane_search_y_ratio"]
+        self._target_im_size = self.config["target_im_size"]
+        self.current_dynamic_y = self._target_im_size * self.lane_search_y_ratio
+        
         self._vehicle_name = os.environ.get("VEHICLE_NAME", "default_robot")
 
         # State Variables
@@ -46,7 +49,6 @@ class DetectLaneNode:
         rospy.loginfo(f"[{node_name}] Initializing Segmentation Model on {self.device}...")
         self._init_model()
         
-
         # Setup ROS Topics
         base_topic = f"/{self._vehicle_name}"
 
@@ -76,8 +78,24 @@ class DetectLaneNode:
         self.pub_debug_yellow = rospy.Publisher(
             f"{base_topic}/debug/lane_yellow", CompressedImage, queue_size=1
         )
+        self.pub_debug_red = rospy.Publisher(
+            f"{base_topic}/debug/lane_red", CompressedImage, queue_size=1
+        )
 
-        rospy.loginfo(f"[{node_name}] Ready and listening to {base_topic}/camera_nod/image/compressed")
+        rospy.loginfo(f"[{node_name}] Ready and listening to {base_topic}/camera_node/image/compressed")
+
+    def _load_config(self):
+        """Loads configuration parameters from JSON."""
+        config_path = os.path.join(os.path.dirname(__file__), "../config/config.json")
+        try:
+            with open(config_path, "r") as f:
+                return json.load(f)["detect_lane"]
+        except (FileNotFoundError, KeyError) as e:
+            rospy.logwarn(f"Using default detect_lane config due to: {e}")
+            return {
+                "lane_search_y_ratio": 0.25,
+                "target_im_size": 192
+            }
 
     def _init_model(self):
         """Loads and optimizes the U-Net model for inference."""
@@ -112,13 +130,17 @@ class DetectLaneNode:
             self.model = torch.jit.trace(self.model, dummy_input)
         rospy.loginfo("Model compiled successfully!")
 
-    def get_x_from_mask(self, mask, class_idx, fallback_value):
+    def get_x_from_mask(self, mask, class_idx, fallback_value, search_y_center):
         """
         Extracts the median X coordinate of a specific class along a defined horizontal band.
+        Now uses a dynamic search_y_center to avoid looking past red lines.
         """
-        y_center = int(self._target_im_size * self.lane_search_y_ratio)
-        y_start = y_center - 20
-        y_end = y_center + 20
+        y_start = int(search_y_center - 15)
+        y_end = int(search_y_center + 15)
+        
+        # Ensure we don't go out of bounds
+        y_start = max(0, y_start)
+        y_end = min(self._target_im_size, y_end)
 
         # Find X coordinates matching the target class within the Y-band
         target_pixels = np.where(mask[y_start:y_end, :] == class_idx)[1]
@@ -182,9 +204,34 @@ class DetectLaneNode:
             output = self.model(tensor_img)
             pred_mask = torch.argmax(output.squeeze(), dim=0).cpu().numpy()
 
+        mask_red = (pred_mask == 3).astype(np.uint8)
+        y_coords_red, x_coords_red = np.where(mask_red > 0)
+
+        closest_red_y = -1.0
+        red_angle = 0.0
+        red_detected = False
+
+        if len(y_coords_red) > 50:
+            red_detected = True
+            closest_red_y = float(np.max(y_coords_red))
+
+            # Fit a line to the red pixels to find the angle
+            m, c = np.polyfit(x_coords_red, y_coords_red, 1)
+
+            # Convert slope to angle in radians
+            red_angle = float(np.arctan(m))
+
+        default_y_center = self._target_im_size * self.lane_search_y_ratio
+        dynamic_y_center = default_y_center
+
+        if red_detected:
+            # If red line is lower in the image that the default search band
+            if closest_red_y > default_y_center:
+                dynamic_y_center = closest_red_y + ((self._target_im_size - closest_red_y) / 2.0)
+
         # 3. Lane Center Calculation (Class 1 = White, Class 2 = Yellow) 
-        center_white = self.get_x_from_mask(pred_mask, class_idx=1, fallback_value=self.white_fallback)
-        center_yellow = self.get_x_from_mask(pred_mask, class_idx=2, fallback_value=self.yellow_fallback)
+        center_white = self.get_x_from_mask(pred_mask, class_idx=1, fallback_value=self.white_fallback, search_y_center=dynamic_y_center)
+        center_yellow = self.get_x_from_mask(pred_mask, class_idx=2, fallback_value=self.yellow_fallback, search_y_center=dynamic_y_center)
 
         # Sanity check for crossed lines
         if center_white <= center_yellow:
@@ -199,15 +246,17 @@ class DetectLaneNode:
         msg_error = Float64()
         msg_error.data = 1.0 - (lane_center / self._target_im_size * 2.0)
         self.pub_lane.publish(msg_error)
-        #print(f"Lane error: {msg_error.data:.4f} range [-1,1]")
-
+        
+        # Publish rich JSON staet including red line geometry
         lane_borders_msg = String()
-
         lane_borders_msg.data = json.dumps({
             "yellow_x": float(center_yellow / self._target_im_size),
             "white_x": float(center_white / self._target_im_size),
             "lane_center_x": float(lane_center / self._target_im_size),
-            "valid": bool(center_white > center_yellow)
+            "valid_lanes": bool(center_white > center_yellow),
+            "red_detected": red_detected,
+            "red_distance_y": float(closest_red_y / self._target_im_size), # Normalized [0, 1]
+            "red_angle": red_angle
         })
 
         self.pub_lane_borders.publish(lane_borders_msg)
@@ -219,35 +268,14 @@ class DetectLaneNode:
         self.lane_center = lane_center
         self.center_white = center_white
         self.center_yellow = center_yellow
+        self.current_dynamic_y = dynamic_y_center
 
         # Create binary debug masks for ROS visualization
         self.debug_img_white = (pred_mask == 1).astype(np.uint8) * 255
         self.debug_img_yellow = (pred_mask == 2).astype(np.uint8) * 255
+        self.debug_img_red = (pred_mask == 3).astype(np.uint8) * 255
 
-        # Optional: Local cv2.imshow (Can be commented out if running headless)
-        '''
-        try:
-            display_img = self.img.copy()
-            y_search = int(self._target_im_size * self.LANE_SEARCH_Y_RATIO)
-            
-            # Draw calculated points
-            cv2.circle(display_img, (int(lane_center), int(self._target_im_size / 2)), 3, (255, 0, 0), -1)
-            cv2.circle(display_img, (int(center_white), y_search), 5, (255, 255, 255), -1)
-            cv2.circle(display_img, (int(center_yellow), y_search), 5, (0, 255, 255), -1)
-            
-            # Draw search boundaries
-            cv2.line(display_img, (0, y_search + 20), (self._target_im_size, y_search + 20), (255, 255, 255))
-            cv2.line(display_img, (0, y_search - 20), (self._target_im_size, y_search - 20), (255, 255, 255))
-            cv2.line(display_img, (int(self._target_im_size / 2), 0), (int(self._target_im_size / 2), self._target_im_size), (0, 255, 0))
-
-            cv2.imshow("Semantic Lane Detection", display_img)
-            cv2.waitKey(1)
-        except Exception:
-            pass # Ignore if X11 forwarding isn't setup in the Docker container
-        '''
-        
         end_time = rospy.Time().now().to_sec()
-        # rospy.loginfo(f"Inf Time: {end_time - start_time}")
 
         self.is_running = False
 
@@ -259,7 +287,7 @@ class DetectLaneNode:
             # Publish Debug Image with Overlays
             if self.pub_debug_lane.get_num_connections() > 0 and hasattr(self, 'img'):
                 debug_img = self.img.copy()
-                y_search = int(self._target_im_size * self.lane_search_y_ratio)
+                y_search = int(self.current_dynamic_y)
                 
                 # Draw centers and boundaries
                 debug_img = cv2.circle(debug_img, (int(self.lane_center), int(self._target_im_size / 2)), 3, (255, 0, 0), -1)
@@ -296,6 +324,14 @@ class DetectLaneNode:
                 debug_msg.format = "jpeg"
                 debug_msg.data = np.array(cv2.imencode(".jpg", self.debug_img_yellow)[1]).tobytes()
                 self.pub_debug_yellow.publish(debug_msg)
+
+           # Publish raw isolated Red Mask
+            if self.pub_debug_red.get_num_connections() > 0 and hasattr(self, 'debug_img_red'):
+                debug_msg = CompressedImage()
+                debug_msg.header.stamp = rospy.Time.now()
+                debug_msg.format = "jpeg"
+                debug_msg.data = np.array(cv2.imencode(".jpg", self.debug_img_red)[1]).tobytes()
+                self.pub_debug_red.publish(debug_msg)
 
             rate.sleep()
 

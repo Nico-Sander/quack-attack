@@ -8,7 +8,7 @@
     <node pkg="intersection_handling" type="switch_control.py" name="switch_control" output="screen"/>
     
     <!-- Hardware Control -->
-    <node pkg="intersection_handling" type="control_wheels.py" name="control_wheels" output="screen" />
+    <!--<node pkg="intersection_handling" type="control_wheels.py" name="control_wheels" output="screen" /> -->
 
     <!-- Dashboard/UI -->
     <node pkg="intersection_handling" type="dashboard.py" name="dashboard" />
