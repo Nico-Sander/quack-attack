@@ -8,7 +8,7 @@ Subscribes to perception nodes and commands the driver node via DriveMode.
 import os
 import json
 import rospy
-from std_msgs.msg import Float64, Int32
+from std_msgs.msg import Float64, Int32, String
 from detect_intersection import IntersectionState
 from custom_enums import DriveMode, TurnDirection
 
@@ -27,7 +27,7 @@ class SwitchControlNode:
             f"/{self._vehicle_name}/detect/intersection", Int32, self._cb_intersection, queue_size=1
         )
         self.sub_sign = rospy.Subscriber(
-            f"/{self._vehicle_name}/detect/sign", Int32, self._cb_sign, queue_size=1
+            f"/{self._vehicle_name}/detect/sign", String, self._cb_sign, queue_size=1
         )
 
         # Publishers (Commands)
@@ -65,9 +65,45 @@ class SwitchControlNode:
         except ValueError:
             rospy.logwarn(f"Invalid intersection state: {msg.data}")
 
-    def _cb_sign(self, msg):
+    #def _cb_sign(self, msg):
         # TODO: Implement sign logic. Defaulting to left turn for testing.
-        self.turn_direction = TurnDirection.LEFT
+        #self.turn_direction = TurnDirection.LEFT
+        #self.turn_direction = TurnDirection.RIGHT
+
+    def _cb_sign(self, msg):
+        """
+        Debug sign callback:
+        - Parses JSON from DetectIntersectionSignNode
+        - Forces deterministic behavior:
+            T-Intersection  -> RIGHT
+            4-Way           -> LEFT
+        """
+
+        try:
+            data = json.loads(msg.data)
+
+            traffic_sign_type = data.get("traffic_sign_type", "")
+            tag_id = data.get("tag_id", -1)
+
+            rospy.loginfo(f"[SIGN DEBUG] tag_id={tag_id}, type={traffic_sign_type}")
+
+            # ----------------------------------------------------
+            # DEBUG OVERRIDE LOGIC (ignore DB decision logic)
+            # ----------------------------------------------------
+
+            if self.current_intersection_state == IntersectionState.T_INTERSECTION:
+                self.turn_direction = TurnDirection.RIGHT
+                rospy.loginfo("[SIGN DEBUG] T-Intersection → FORCE RIGHT")
+
+            elif self.current_intersection_state == IntersectionState.FOUR_WAY:
+                self.turn_direction = TurnDirection.LEFT
+                rospy.loginfo("[SIGN DEBUG] 4-Way → FORCE LEFT")
+
+            else:
+                rospy.loginfo("[SIGN DEBUG] No intersection → keeping current direction")
+
+        except json.JSONDecodeError:
+            rospy.logwarn("[SIGN DEBUG] Invalid JSON received")
 
     def run(self):
         """Main control loop."""

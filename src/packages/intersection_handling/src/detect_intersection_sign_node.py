@@ -25,7 +25,7 @@ class DetectIntersectionSignNode:
                                            "/{}/camera_node/image/compressed".format(vehicle))
 
         self.output_topic = rospy.get_param("~output_topic",
-                                            "/{}/detected_sign".format(vehicle))
+                                            "/{}/detect/sign".format(vehicle))
 
         self.cooldown = float(rospy.get_param("~cooldown", 1.0))
         self.last_seen = {}
