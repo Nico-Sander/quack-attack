@@ -26,7 +26,7 @@ class SwitchControlNode:
 
         # Load AprilTag DB to translate IDs into Sign Types
         node_dir = os.path.dirname(os.path.abspath(__file__))
-        self.db_path = rospy.get_param("~apriltags_db_path", os.path.join(node_dir, "apriltagsDB.yaml"))
+        self.db_path = rospy.get_param("~apriltags_db_path", os.path.join(node_dir, "52DB.yaml"))
         self.sign_db = self._load_sign_db(self.db_path)
 
         # Dictionary mapping sign types to allowed TurnDirections

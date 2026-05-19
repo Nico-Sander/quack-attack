@@ -34,7 +34,7 @@
     "switch_control": {
         "timers": {
             "stop_duration": 3.0,
-            "red_line_ignore_duration": 1.5,
+            "red_line_ignore_duration": 2.5,
             "turn_durations": {
                 "LEFT": 2.5,
                 "RIGHT": 1.0,
