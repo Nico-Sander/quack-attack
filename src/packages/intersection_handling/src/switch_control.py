@@ -76,7 +76,7 @@ class SwitchControlNode:
             return {
                 "timers": {
                     "stop_duration": 3.0, 
-                    "red_line_ignore_duration": 4.0, 
+                    "red_line_ignore_duration": 5.0, 
                     "turn_durations": {"LEFT": 2.0, "RIGHT": 1.2, "STRAIGHT": 2.0}
                 }
             }

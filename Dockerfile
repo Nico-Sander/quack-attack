@@ -23,7 +23,8 @@ RUN pip3 install --no-cache-dir --ignore-installed \
     torch torchvision \
     albumentations \
     segmentation-models-pytorch \
-    ultralytics
+    ultralytics \
+    pupil-apriltags
 
 # 2. The GUI Fix! 
 # Albumentations automatically sneaks 'opencv-python-headless' in as a hidden dependency.
