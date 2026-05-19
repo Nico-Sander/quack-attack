@@ -2,7 +2,7 @@
 
 # Configuration
 TARGET_SSID="DuckieNetz"
-VEHICLE_NAME="track"
+VEHICLE_NAME="trick"
 VEHICLE_DOMAIN=".lan"
 
 echo "=========================================="
