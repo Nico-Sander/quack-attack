@@ -30,7 +30,7 @@
         "max": 1.0
       },
       "y_max": {
-        "default": 0.92,
+        "default": 0.99,
         "min": 0.0,
         "max": 1.0
       },
@@ -97,6 +97,21 @@
       "avoidance_steering_gain": {
         "default": 0.8,
         "min": 0.0,
+        "max": 3.0
+      },
+      "avoidance_turn_in_place_error_enter": {
+        "default": 0.45,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "avoidance_turn_in_place_error_exit": {
+        "default": 0.15,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "avoidance_turn_in_place_omega": {
+        "default": 1.0,
+        "min": -3.0,
         "max": 3.0
       },
       "lane_target_block_margin": {
@@ -203,27 +218,27 @@
         "max": 2.0
       },
       "blocked_recovery_delay": {
-        "default": 2.5,
+        "default": 1.5,
         "min": 0.0,
         "max": 10.0
       },
       "blocked_recovery_omega": {
-        "default": 2.2,
+        "default": 2,
         "min": -3.0,
         "max": 3.0
       },
       "blocked_recovery_min_turn_time": {
-        "default": 1.5,
+        "default": 3,
         "min": 0.0,
         "max": 5.0
       },
       "blocked_recovery_min_angle_deg": {
-        "default": 35.0,
+        "default": 60.0,
         "min": 0.0,
         "max": 180.0
       },
       "blocked_recovery_max_angle_deg": {
-        "default": 110.0,
+        "default": 180.0,
         "min": 0.0,
         "max": 180.0
       }

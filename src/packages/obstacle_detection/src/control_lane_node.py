@@ -75,6 +75,8 @@ class ControlLaneNode:
         self.blocked_recovery_return_start_time = 0.0
         self.blocked_recovery_return_duration = 0.0
 
+        self.avoidance_turn_in_place_active = False
+
         base_topic = f"/{self.vehicle_name}"
 
         self.pub_cmd_vel = rospy.Publisher(
@@ -162,6 +164,16 @@ class ControlLaneNode:
 
         self.avoidance_vel = float(self._param(planner, "avoidance_vel", 0.08))
         self.avoidance_steering_gain = float(self._param(planner, "avoidance_steering_gain", 1.20))
+
+        self.avoidance_turn_in_place_error_enter = float(
+            self._param(planner, "avoidance_turn_in_place_error_enter", 0.55)
+        )
+        self.avoidance_turn_in_place_error_exit = float(
+            self._param(planner, "avoidance_turn_in_place_error_exit", 0.25)
+        )
+        self.avoidance_turn_in_place_omega = float(
+            self._param(planner, "avoidance_turn_in_place_omega", 0.45)
+        )
 
         self.avoidance_kp = float(self._param(planner, "avoidance_kp", 4.0))
         self.avoidance_ki = float(self._param(planner, "avoidance_ki", 0.0))
@@ -658,6 +670,48 @@ class ControlLaneNode:
 
         return target_x, debug
 
+    def reset_avoidance_turn_in_place(self):
+        self.avoidance_turn_in_place_active = False
+
+    def should_turn_in_place_for_avoidance(self, raw_avoid_error):
+        abs_error = abs(raw_avoid_error)
+
+        if self.avoidance_turn_in_place_active:
+            if abs_error <= self.avoidance_turn_in_place_error_exit:
+                self.avoidance_turn_in_place_active = False
+                return False
+            return True
+
+        if abs_error >= self.avoidance_turn_in_place_error_enter:
+            self.avoidance_turn_in_place_active = True
+            return True
+
+        return False
+
+    def apply_avoidance_turn_in_place(self, raw_avoid_error, debug):
+        turn_direction = 1.0 if raw_avoid_error >= 0.0 else -1.0
+        omega = turn_direction * abs(self.avoidance_turn_in_place_omega)
+        omega = max(min(omega, self.max_omega), -self.max_omega)
+
+        self.v = 0.0
+        self.a = omega
+        self.integral = 0.0
+        self.lastError = raw_avoid_error
+        self.last_time = rospy.Time.now().to_sec()
+        self.pid_mode = "avoidance"
+
+        debug["reason"] = "avoidance_turn_in_place"
+        debug["avoidance_turn_in_place_active"] = True
+        debug["avoidance_turn_in_place_error"] = raw_avoid_error
+        debug["avoidance_turn_in_place_enter"] = self.avoidance_turn_in_place_error_enter
+        debug["avoidance_turn_in_place_exit"] = self.avoidance_turn_in_place_error_exit
+        debug["avoidance_turn_in_place_omega"] = omega
+        debug["error"] = raw_avoid_error
+        debug["v"] = self.v
+        debug["omega"] = self.a
+
+        return debug
+
     def calculate_pid(self, error, velocity_override=None, mode="lane"):
         current_time = rospy.Time.now().to_sec()
 
@@ -995,13 +1049,23 @@ class ControlLaneNode:
                 mode = "avoidance"
         else:
             raw_avoid_error = 1.0 - 2.0 * target_x
-            error = max(-1.0, min(1.0, raw_avoid_error * self.avoidance_steering_gain))
-            velocity_override = self.avoidance_vel
-            mode = "avoidance"
 
             self.last_avoidance_side = debug.get("avoidance_side")
             self.last_avoidance_target_x = target_x
             self.last_avoidance_time = rospy.Time.now().to_sec()
+
+            if self.should_turn_in_place_for_avoidance(raw_avoid_error):
+                debug = self.apply_avoidance_turn_in_place(raw_avoid_error, debug)
+                self.pub_debug_plan.publish(String(data=json.dumps(debug)))
+                self.latest_debug = debug
+                return
+
+            error = max(-1.0, min(1.0, raw_avoid_error * self.avoidance_steering_gain))
+            velocity_override = self.avoidance_vel
+            mode = "avoidance"
+
+        if mode == "lane":
+            self.reset_avoidance_turn_in_place()
 
         self.calculate_pid(error, velocity_override=velocity_override, mode=mode)
 
