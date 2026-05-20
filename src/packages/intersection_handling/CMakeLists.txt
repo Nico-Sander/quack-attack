@@ -10,7 +10,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_package()
 
-catkin_install_python(PROGRAMS
-  src/control_intersection_node.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
+#catkin_install_python(PROGRAMS
+#  src/control_intersection_node.py
+#  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+#)

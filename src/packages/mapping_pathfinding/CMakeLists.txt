@@ -6,3 +6,5 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
 )
+
+catkin_package()
