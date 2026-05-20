@@ -52,23 +52,23 @@ class DetectObstacleNode:
             queue_size=1
         )
 
-        # Einfaches Signal für switch_control_node:
+        # Einfaches Signal fuer switch_control_node:
         # 0.0 = keine Ente auf Spur
-        # 1.0 = Ente auf Spur
+        # 1.0 = mindestens eine Ente auf Spur
         self.pub_duckie = rospy.Publisher(
             f"{base_topic}/detect/duckie",
             Float64,
             queue_size=1
         )
 
-        # Strukturierte Detektionsinfo als JSON
+        # Strukturierte Detektionsinfo als JSON.
+        # Wichtig: enthaelt jetzt ALLE Duckie-Bounding-Boxes.
         self.pub_obstacle = rospy.Publisher(
             f"{base_topic}/detect/duckie_BB",
             String,
             queue_size=1
         )
 
-        # Debug-Bild mit Hindernisregion und Bounding Boxes
         self.pub_debug = rospy.Publisher(
             f"{base_topic}/debug/obstacle_detection",
             CompressedImage,
@@ -123,8 +123,6 @@ class DetectObstacleNode:
 
         try:
             self.model = YOLO(model_path)
-
-            # Klassen direkt aus dem Modell auslesen.
             self.classes = list(self.model.names.values())
 
             if torch.cuda.is_available():
@@ -142,19 +140,6 @@ class DetectObstacleNode:
             self.model = None
 
     def cb_lane_borders(self, msg):
-        """
-        Receives lane borders from detect_lane_node.
-
-        Expected JSON:
-        {
-            "yellow_x": 0.25,
-            "white_x": 0.75,
-            "lane_center_x": 0.5,
-            "valid": true
-        }
-
-        Values must be relative image coordinates in range [0.0, 1.0].
-        """
         try:
             data = json.loads(msg.data)
 
@@ -165,11 +150,9 @@ class DetectObstacleNode:
             if not valid:
                 return
 
-            # Clamp auf gültigen Bereich.
             yellow_x = max(0.0, min(1.0, yellow_x))
             white_x = max(0.0, min(1.0, white_x))
 
-            # Sicherheitsprüfung: gelb muss links von weiß liegen.
             if yellow_x >= white_x:
                 rospy.logwarn_throttle(
                     1.0,
@@ -189,12 +172,6 @@ class DetectObstacleNode:
             )
 
     def get_active_region(self):
-        """
-        Returns the currently active obstacle region.
-
-        If recent lane borders are available, use dynamic lane borders.
-        Otherwise fall back to config values.
-        """
         current_time = rospy.Time.now().to_sec()
         lane_borders_recent = (
             current_time - self.last_lane_borders_time
@@ -219,62 +196,69 @@ class DetectObstacleNode:
             return
 
         detections = self.detect_with_model(img)
-
         region_x_min, region_x_max, region_y_min, using_dynamic_region = self.get_active_region()
 
-        obstacle_on_lane = False
-        best_detection = None
+        duckies = []
+        duckies_on_lane = []
 
         for det in detections:
             if det["confidence"] < self.confidence_threshold:
                 continue
 
-            class_name = det["class_name"].lower()
-
-            # Aktuelle Anforderung: Nur Enten sind relevante Hindernisse.
-            if class_name != "duckie":
+            if det["class_name"].lower() != "duckie":
                 continue
 
-            x_center = det["x_center"]
-            y_center = det["y_center"]
+            duckie = det.copy()
+            duckie["on_lane"] = (
+                region_x_min <= det["x_center"] <= region_x_max and
+                det["y_center"] >= region_y_min
+            )
+            duckies.append(duckie)
 
-            if region_x_min <= x_center <= region_x_max and y_center >= region_y_min:
-                obstacle_on_lane = True
-                best_detection = det
-                break
+            if duckie["on_lane"]:
+                duckies_on_lane.append(duckie)
 
-        # Falls keine Ente auf der Spur liegt, aber trotzdem etwas erkannt wurde,
-        # wird die beste Erkennung für das JSON-Debug-Topic ausgegeben.
-        if best_detection is None and len(detections) > 0:
-            best_detection = max(detections, key=lambda d: d["confidence"])
+        obstacle_on_lane = len(duckies_on_lane) > 0
 
         duckie_msg = Float64()
         duckie_msg.data = 1.0 if obstacle_on_lane else 0.0
         self.pub_duckie.publish(duckie_msg)
 
+        # Neues Format fuer den Controller: alle Enten als Liste.
+        # Legacy-Felder der besten Ente bleiben enthalten, damit andere Nodes nicht sofort brechen.
+        best_detection = None
+        if len(duckies_on_lane) > 0:
+            best_detection = max(duckies_on_lane, key=lambda d: d["confidence"])
+        elif len(duckies) > 0:
+            best_detection = max(duckies, key=lambda d: d["confidence"])
+
+        output = {
+            "detected": len(duckies) > 0,
+            "obstacle_on_lane": obstacle_on_lane,
+            "num_duckies": len(duckies),
+            "num_duckies_on_lane": len(duckies_on_lane),
+            "duckies": duckies,
+            "region_x_min": region_x_min,
+            "region_x_max": region_x_max,
+            "region_y_min": region_y_min,
+            "using_dynamic_region": using_dynamic_region,
+        }
+
         if best_detection is not None:
-            output = best_detection.copy()
-            output["detected"] = True
-            output["obstacle_on_lane"] = obstacle_on_lane
-            output["region_x_min"] = region_x_min
-            output["region_x_max"] = region_x_max
-            output["region_y_min"] = region_y_min
-            output["using_dynamic_region"] = using_dynamic_region
+            output.update(best_detection)
         else:
-            output = {
-                "detected": False,
+            output.update({
                 "class_name": "",
                 "confidence": 0.0,
                 "x_center": 0.0,
                 "y_center": 0.0,
                 "width": 0.0,
                 "height": 0.0,
-                "obstacle_on_lane": False,
-                "region_x_min": region_x_min,
-                "region_x_max": region_x_max,
-                "region_y_min": region_y_min,
-                "using_dynamic_region": using_dynamic_region
-            }
+                "xmin": 0.0,
+                "ymin": 0.0,
+                "xmax": 0.0,
+                "ymax": 0.0,
+            })
 
         self.pub_obstacle.publish(String(data=json.dumps(output)))
         self.publish_debug_image(
@@ -319,46 +303,31 @@ class DetectObstacleNode:
             if conf < self.confidence_threshold:
                 continue
 
-            xmin, ymin, xmax, ymax = box.xyxy[0].cpu().numpy()
+            xmin_px, ymin_px, xmax_px, ymax_px = box.xyxy[0].cpu().numpy()
             cls_id = int(box.cls[0].cpu().numpy())
-
             class_name = self.model.names.get(cls_id, str(cls_id))
 
-            x_center = ((xmin + xmax) / 2.0) / w
-            y_center = ((ymin + ymax) / 2.0) / h
-            box_width = (xmax - xmin) / w
-            box_height = (ymax - ymin) / h
+            xmin = max(0.0, min(1.0, float(xmin_px / w)))
+            ymin = max(0.0, min(1.0, float(ymin_px / h)))
+            xmax = max(0.0, min(1.0, float(xmax_px / w)))
+            ymax = max(0.0, min(1.0, float(ymax_px / h)))
 
             detections.append({
                 "class_name": class_name,
                 "confidence": conf,
-                "x_center": float(x_center),
-                "y_center": float(y_center),
-                "width": float(box_width),
-                "height": float(box_height)
+                "x_center": float((xmin + xmax) / 2.0),
+                "y_center": float((ymin + ymax) / 2.0),
+                "width": float(xmax - xmin),
+                "height": float(ymax - ymin),
+                "xmin": xmin,
+                "ymin": ymin,
+                "xmax": xmax,
+                "ymax": ymax,
             })
 
         return detections
 
     def mock_detect(self, img):
-        """
-        Fallback, falls Modell nicht gefunden wird.
-        Gibt standardmäßig keine Erkennung zurück.
-
-        Rückgabeformat:
-        [
-            {
-                "class_name": "duckie",
-                "confidence": 0.85,
-                "x_center": 0.50,
-                "y_center": 0.65,
-                "width": 0.20,
-                "height": 0.25
-            }
-        ]
-
-        Alle Werte x/y/width/height sind relativ zum Bildbereich [0.0, 1.0].
-        """
         return []
 
     def publish_debug_image(
@@ -379,7 +348,6 @@ class DetectObstacleNode:
         y1 = int(region_y_min * h)
         y2 = h
 
-        # Dynamische Region cyan, Fallback-Region gelb.
         region_color = (255, 255, 0) if using_dynamic_region else (0, 255, 255)
         cv2.rectangle(debug_img, (x1, y1), (x2, y2), region_color, 2)
 
@@ -395,36 +363,22 @@ class DetectObstacleNode:
         )
 
         for det in detections:
-            cx = det["x_center"]
-            cy = det["y_center"]
-            bw = det["width"]
-            bh = det["height"]
-
-            bx1 = int((cx - bw / 2.0) * w)
-            by1 = int((cy - bh / 2.0) * h)
-            bx2 = int((cx + bw / 2.0) * w)
-            by2 = int((cy + bh / 2.0) * h)
-
-            bx1 = max(0, min(w - 1, bx1))
-            by1 = max(0, min(h - 1, by1))
-            bx2 = max(0, min(w - 1, bx2))
-            by2 = max(0, min(h - 1, by2))
+            bx1 = int(det["xmin"] * w)
+            by1 = int(det["ymin"] * h)
+            bx2 = int(det["xmax"] * w)
+            by2 = int(det["ymax"] * h)
 
             class_name = det["class_name"]
             confidence = det["confidence"]
             label = f"{class_name} {confidence:.2f}"
 
-            class_name_lower = class_name.lower()
-            is_obstacle_class = class_name_lower == "duckie"
+            is_obstacle_class = class_name.lower() == "duckie"
             is_inside_region = (
                 region_x_min <= det["x_center"] <= region_x_max and
                 det["y_center"] >= region_y_min
             )
 
-            if is_obstacle_class and is_inside_region:
-                color = (0, 0, 255)
-            else:
-                color = (0, 255, 0)
+            color = (0, 0, 255) if is_obstacle_class and is_inside_region else (0, 255, 0)
 
             cv2.rectangle(debug_img, (bx1, by1), (bx2, by2), color, 2)
             cv2.putText(

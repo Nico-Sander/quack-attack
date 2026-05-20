@@ -11,6 +11,9 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package()
 
 catkin_install_python(PROGRAMS
+  src/control_lane_node.py
+  src/dashboard_node.py
+  src/detect_lane_node.py
   src/detect_obstacle_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

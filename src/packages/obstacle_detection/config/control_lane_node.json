@@ -1,0 +1,217 @@
+{
+  "debug_image_topics": [],
+  "parameters": {
+    "pid": {
+      "p": {
+        "default": 6.0,
+        "min": 0.0,
+        "max": 15.0
+      },
+      "i": {
+        "default": 0.0,
+        "min": 0.0,
+        "max": 10.0
+      },
+      "d": {
+        "default": 1.0,
+        "min": 0.0,
+        "max": 10.0
+      },
+      "max_vel": {
+        "default": 0.15,
+        "min": 0.0,
+        "max": 10.0
+      }
+    },
+    "path_planner": {
+      "y_min": {
+        "default": 0.6,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "y_max": {
+        "default": 0.92,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "duckie_y_margin": {
+        "default": 0.04,
+        "min": 0.0,
+        "max": 0.2
+      },
+      "duckie_x_margin": {
+        "default": 0.06,
+        "min": 0.0,
+        "max": 0.3
+      },
+      "lane_margin": {
+        "default": 0.04,
+        "min": 0.0,
+        "max": 0.2
+      },
+      "planner_image_width_px": {
+        "default": 192,
+        "min": 1,
+        "max": 2000
+      },
+      "min_free_width_px": {
+        "default": 45,
+        "min": 1,
+        "max": 500
+      },
+      "lane_timeout": {
+        "default": 1.0,
+        "min": 0.0,
+        "max": 5.0
+      },
+      "obstacle_timeout": {
+        "default": 1.2,
+        "min": 0.0,
+        "max": 5.0
+      },
+      "duckie_hold_time": {
+        "default": 0.8,
+        "min": 0.0,
+        "max": 5.0
+      },
+      "duckie_missed_frames_before_clear": {
+        "default": 4,
+        "min": 0,
+        "max": 20
+      },
+      "max_omega": {
+        "default": 5.0,
+        "min": 0.0,
+        "max": 10.0
+      },
+      "min_vel": {
+        "default": 0.15,
+        "min": 0.0,
+        "max": 0.5
+      },
+      "avoidance_vel": {
+        "default": 0.15,
+        "min": 0.0,
+        "max": 0.5
+      },
+      "avoidance_steering_gain": {
+        "default": 1.2,
+        "min": 0.0,
+        "max": 3.0
+      },
+      "lane_target_block_margin": {
+        "default": 0.1,
+        "min": 0.0,
+        "max": 0.3
+      },
+      "escape_clearance": {
+        "default": 0.04,
+        "min": 0.0,
+        "max": 0.2
+      },
+      "gap_width_bonus_weight": {
+        "default": 0.05,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "narrow_gap_behavior": {
+        "default": "stop"
+      },
+      "obstacle_image_width_px": {
+        "default": 640,
+        "min": 1,
+        "max": 4000
+      },
+      "obstacle_image_height_px": {
+        "default": 480,
+        "min": 1,
+        "max": 4000
+      },
+      "min_duckie_width_px": {
+        "default": 30,
+        "min": 1,
+        "max": 500
+      },
+      "min_duckie_height_px": {
+        "default": 30,
+        "min": 1,
+        "max": 500
+      },
+      "min_duckie_area_px": {
+        "default": 950,
+        "min": 1,
+        "max": 100000
+      },
+      "default_lane_left": {
+        "default": 0.05,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "default_lane_right": {
+        "default": 0.95,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "avoidance_kp": {
+        "default": 2.0,
+        "min": 0.0,
+        "max": 15.0
+      },
+      "avoidance_ki": {
+        "default": 0.0,
+        "min": 0.0,
+        "max": 10.0
+      },
+      "avoidance_kd": {
+        "default": 0.02,
+        "min": 0.0,
+        "max": 10.0
+      },
+      "avoidance_side_lock_time": {
+        "default": 0.9,
+        "min": 0.0,
+        "max": 5.0
+      },
+      "avoidance_side_lock_bonus": {
+        "default": 0.2,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "avoidance_target_smoothing_alpha": {
+        "default": 0.45,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "avoidance_clear_hold_time": {
+        "default": 0.8,
+        "min": 0.0,
+        "max": 5.0
+      },
+      "lane_reentry_blend_time": {
+        "default": 0.8,
+        "min": 0.0,
+        "max": 5.0
+      },
+      "reentry_vel": {
+        "default": 0.15,
+        "min": 0.0,
+        "max": 0.5
+      },
+      "open_side_width_bonus": {
+        "default": 0.35,
+        "min": 0.0,
+        "max": 2.0
+      },
+      "blocked_recovery_delay": {
+        "default": 0.5,
+        "min": 0.0,
+        "max": 10.0
+      },
+      "blocked_recovery_omega": {
+        "default": 2.0,
+        "min": -3.0,
+        "max": 3.0
+      }
+    }
+  }
+}

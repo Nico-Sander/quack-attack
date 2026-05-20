@@ -2,7 +2,7 @@
 <package format="2">
   <name>obstacle_detection</name>
   <version>0.0.1</version>
-  <description>Obstacle detection package for Duckiebot using YOLO or SSD.</description>
+  <description>Obstacle detection package for Duckiebot using YOLO</description>
 
   <maintainer email="todo@example.com">quack_attack</maintainer>
   <license>TODO</license>
