@@ -40,12 +40,12 @@
         "max": 0.2
       },
       "duckie_x_margin": {
-        "default": 0.06,
+        "default": 0.1,
         "min": 0.0,
         "max": 0.3
       },
       "lane_margin": {
-        "default": 0.04,
+        "default": 0.08,
         "min": 0.0,
         "max": 0.2
       },
@@ -55,7 +55,7 @@
         "max": 2000
       },
       "min_free_width_px": {
-        "default": 45,
+        "default": 40,
         "min": 1,
         "max": 500
       },
@@ -85,7 +85,7 @@
         "max": 10.0
       },
       "min_vel": {
-        "default": 0.15,
+        "default": 0.05,
         "min": 0.0,
         "max": 0.5
       },
@@ -95,7 +95,7 @@
         "max": 0.5
       },
       "avoidance_steering_gain": {
-        "default": 1.2,
+        "default": 0.8,
         "min": 0.0,
         "max": 3.0
       },
@@ -153,7 +153,7 @@
         "max": 1.0
       },
       "avoidance_kp": {
-        "default": 2.0,
+        "default": 4.5,
         "min": 0.0,
         "max": 15.0
       },
@@ -163,12 +163,12 @@
         "max": 10.0
       },
       "avoidance_kd": {
-        "default": 0.02,
+        "default": 0.05,
         "min": 0.0,
         "max": 10.0
       },
       "avoidance_side_lock_time": {
-        "default": 0.9,
+        "default": 0.4,
         "min": 0.0,
         "max": 5.0
       },
@@ -183,12 +183,12 @@
         "max": 1.0
       },
       "avoidance_clear_hold_time": {
-        "default": 0.8,
+        "default": 0.2,
         "min": 0.0,
         "max": 5.0
       },
       "lane_reentry_blend_time": {
-        "default": 0.8,
+        "default": 0.2,
         "min": 0.0,
         "max": 5.0
       },
@@ -198,19 +198,34 @@
         "max": 0.5
       },
       "open_side_width_bonus": {
-        "default": 0.35,
+        "default": 0.15,
         "min": 0.0,
         "max": 2.0
       },
       "blocked_recovery_delay": {
-        "default": 0.5,
+        "default": 2.5,
         "min": 0.0,
         "max": 10.0
       },
       "blocked_recovery_omega": {
-        "default": 2.0,
+        "default": 2.2,
         "min": -3.0,
         "max": 3.0
+      },
+      "blocked_recovery_min_turn_time": {
+        "default": 1.5,
+        "min": 0.0,
+        "max": 5.0
+      },
+      "blocked_recovery_min_angle_deg": {
+        "default": 35.0,
+        "min": 0.0,
+        "max": 180.0
+      },
+      "blocked_recovery_max_angle_deg": {
+        "default": 110.0,
+        "min": 0.0,
+        "max": 180.0
       }
     }
   }

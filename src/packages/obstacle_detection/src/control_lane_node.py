@@ -66,6 +66,14 @@ class ControlLaneNode:
         self.no_valid_escape_since = None
         self.blocked_recovery_active = False
         self.blocked_recovery_start_time = 0.0
+        self.blocked_recovery_phase = None
+        self.blocked_recovery_omega_cmd = 0.0
+        self.blocked_recovery_best_target_x = None
+        self.blocked_recovery_best_debug = None
+        self.blocked_recovery_best_score = None
+        self.blocked_recovery_best_elapsed = 0.0
+        self.blocked_recovery_return_start_time = 0.0
+        self.blocked_recovery_return_duration = 0.0
 
         base_topic = f"/{self.vehicle_name}"
 
@@ -187,8 +195,14 @@ class ControlLaneNode:
 
         self.blocked_recovery_delay = float(self._param(planner, "blocked_recovery_delay", 2.0))
         self.blocked_recovery_omega = float(self._param(planner, "blocked_recovery_omega", 0.20))
+        self.blocked_recovery_min_turn_time = float(
+            self._param(planner, "blocked_recovery_min_turn_time", 0.45)
+        )
+        self.blocked_recovery_min_angle_deg = float(
+            self._param(planner, "blocked_recovery_min_angle_deg", 35.0)
+        )
         self.blocked_recovery_max_angle_deg = float(
-            self._param(planner, "blocked_recovery_max_angle_deg", 60.0)
+            self._param(planner, "blocked_recovery_max_angle_deg", 80.0)
         )
 
         rospy.loginfo(
@@ -200,7 +214,9 @@ class ControlLaneNode:
             f"clear_hold={self.avoidance_clear_hold_time}, reentry_blend={self.lane_reentry_blend_time}, "
             f"open_side_bonus={self.open_side_width_bonus}, "
             f"blocked_recovery=({self.blocked_recovery_delay}s,{self.blocked_recovery_omega}rad/s,"
-            f"{self.blocked_recovery_max_angle_deg}deg)"
+            f"min_time={self.blocked_recovery_min_turn_time}s,"
+            f"min_angle={self.blocked_recovery_min_angle_deg}deg,"
+            f"max_angle={self.blocked_recovery_max_angle_deg}deg)"
         )
 
     @staticmethod
@@ -738,8 +754,157 @@ class ControlLaneNode:
         self.no_valid_escape_since = None
         self.blocked_recovery_active = False
         self.blocked_recovery_start_time = 0.0
+        self.blocked_recovery_phase = None
+        self.blocked_recovery_omega_cmd = 0.0
+        self.blocked_recovery_best_target_x = None
+        self.blocked_recovery_best_debug = None
+        self.blocked_recovery_best_score = None
+        self.blocked_recovery_best_elapsed = 0.0
+        self.blocked_recovery_return_start_time = 0.0
+        self.blocked_recovery_return_duration = 0.0
 
-    
+    def choose_blocked_recovery_omega(self, debug):
+        omega = abs(self.blocked_recovery_omega)
+        if omega <= 0.0:
+            omega = 0.20
+
+        # Wenn nur eine Linie sichtbar ist, ist die Lage am Rand eindeutig.
+        # Außen zwischen weißer Linie und Duckie: nach links in die freie Fläche drehen.
+        if self.white_valid and not self.yellow_valid:
+            debug["blocked_recovery_direction_reason"] = "white_only_turn_left"
+            return omega
+
+        # Innen zwischen gelber Linie und Duckie: nach rechts in die freie Fläche drehen.
+        if self.yellow_valid and not self.white_valid:
+            debug["blocked_recovery_direction_reason"] = "yellow_only_turn_right"
+            return -omega
+
+        # Sonst möglichst von der zuletzt gewählten Avoidance-Seite wegdrehen.
+        if self.last_avoidance_side == "left_escape":
+            debug["blocked_recovery_direction_reason"] = "last_left_escape_turn_left"
+            return omega
+
+        if self.last_avoidance_side == "right_escape":
+            debug["blocked_recovery_direction_reason"] = "last_right_escape_turn_right"
+            return -omega
+
+        debug["blocked_recovery_direction_reason"] = "default_turn_left"
+        return omega
+
+    def blocked_recovery_scan_duration(self):
+        omega_abs = abs(self.blocked_recovery_omega_cmd)
+        if omega_abs <= 0.0:
+            omega_abs = max(abs(self.blocked_recovery_omega), 0.20)
+
+        min_angle_time = math.radians(max(0.0, self.blocked_recovery_min_angle_deg)) / omega_abs
+        max_angle_time = math.radians(max(0.0, self.blocked_recovery_max_angle_deg)) / omega_abs
+
+        scan_time = max(0.0, self.blocked_recovery_min_turn_time, min_angle_time)
+
+        if max_angle_time > 0.0:
+            scan_time = min(scan_time, max_angle_time)
+
+        return scan_time
+
+    def start_blocked_recovery_scan(self, debug):
+        self.blocked_recovery_active = True
+        self.blocked_recovery_phase = "scan"
+        self.blocked_recovery_start_time = rospy.Time.now().to_sec()
+        self.blocked_recovery_omega_cmd = self.choose_blocked_recovery_omega(debug)
+        self.blocked_recovery_best_target_x = None
+        self.blocked_recovery_best_debug = None
+        self.blocked_recovery_best_score = None
+        self.blocked_recovery_best_elapsed = 0.0
+        self.blocked_recovery_return_start_time = 0.0
+        self.blocked_recovery_return_duration = 0.0
+
+    def score_blocked_recovery_candidate(self, target_x, debug):
+        selected_width_px = float(debug.get("selected_free_width_px", 0.0))
+        lane_target_x = float(debug.get("lane_target_x", 0.5))
+        distance_px = abs(float(target_x) - lane_target_x) * float(self.planner_image_width_px)
+        return selected_width_px - distance_px
+
+    def remember_blocked_recovery_candidate(self, target_x, debug):
+        if target_x is None or target_x == "STOP":
+            return
+
+        score = self.score_blocked_recovery_candidate(target_x, debug)
+        elapsed = rospy.Time.now().to_sec() - self.blocked_recovery_start_time
+
+        if self.blocked_recovery_best_score is None or score > self.blocked_recovery_best_score:
+            best_debug = dict(debug)
+            best_debug["blocked_recovery_best_score"] = score
+            best_debug["blocked_recovery_best_elapsed"] = elapsed
+
+            self.blocked_recovery_best_score = score
+            self.blocked_recovery_best_target_x = target_x
+            self.blocked_recovery_best_debug = best_debug
+            self.blocked_recovery_best_elapsed = elapsed
+
+    def apply_blocked_recovery_turn(self, debug, omega, reason):
+        self.v = 0.0
+        self.a = omega
+        debug["reason"] = reason
+        debug["blocked_recovery_active"] = True
+        debug["blocked_recovery_phase"] = self.blocked_recovery_phase
+        debug["blocked_recovery_omega"] = omega
+        debug["blocked_recovery_scan_elapsed"] = (
+            rospy.Time.now().to_sec() - self.blocked_recovery_start_time
+        )
+        debug["blocked_recovery_scan_duration"] = self.blocked_recovery_scan_duration()
+        debug["blocked_recovery_best_target_x"] = self.blocked_recovery_best_target_x
+        debug["blocked_recovery_best_score"] = self.blocked_recovery_best_score
+        return debug
+
+    def handle_blocked_recovery_candidate(self, target_x, debug):
+        if not self.blocked_recovery_active:
+            return target_x, debug, True
+
+        now = rospy.Time.now().to_sec()
+
+        if self.blocked_recovery_phase == "scan":
+            self.remember_blocked_recovery_candidate(target_x, debug)
+            scan_elapsed = now - self.blocked_recovery_start_time
+            scan_duration = self.blocked_recovery_scan_duration()
+
+            if scan_elapsed < scan_duration:
+                debug = self.apply_blocked_recovery_turn(
+                    debug,
+                    self.blocked_recovery_omega_cmd,
+                    "blocked_recovery_scanning_best_gap",
+                )
+                return None, debug, False
+
+            if self.blocked_recovery_best_target_x is None:
+                return target_x, debug, True
+
+            angle_back_time = max(0.0, scan_elapsed - self.blocked_recovery_best_elapsed)
+            self.blocked_recovery_phase = "return"
+            self.blocked_recovery_return_start_time = now
+            self.blocked_recovery_return_duration = angle_back_time
+
+        if self.blocked_recovery_phase == "return":
+            return_elapsed = now - self.blocked_recovery_return_start_time
+
+            if return_elapsed < self.blocked_recovery_return_duration:
+                best_debug = dict(self.blocked_recovery_best_debug or debug)
+                best_debug = self.apply_blocked_recovery_turn(
+                    best_debug,
+                    -self.blocked_recovery_omega_cmd,
+                    "blocked_recovery_returning_to_best_gap",
+                )
+                best_debug["blocked_recovery_return_elapsed"] = return_elapsed
+                best_debug["blocked_recovery_return_duration"] = self.blocked_recovery_return_duration
+                return None, best_debug, False
+
+            best_debug = dict(self.blocked_recovery_best_debug or debug)
+            best_debug["reason"] = "blocked_recovery_use_best_gap"
+            best_debug["blocked_recovery_active"] = False
+            best_debug["blocked_recovery_phase"] = "done"
+            return self.blocked_recovery_best_target_x, best_debug, True
+
+        return target_x, debug, True
+
     def handle_no_valid_escape(self, debug):
         now = rospy.Time.now().to_sec()
 
@@ -757,16 +922,26 @@ class ControlLaneNode:
             debug["blocked_recovery_active"] = False
             return debug
 
-        # Danach dauerhaft langsam drehen, bis wieder ein valides Ziel gefunden wird.
-        self.blocked_recovery_active = True
-        self.v = 0.0
-        self.a = self.blocked_recovery_omega
+        if not self.blocked_recovery_active:
+            self.start_blocked_recovery_scan(debug)
 
-        debug["reason"] = "blocked_recovery_turn_left"
-        debug["blocked_recovery_active"] = True
-        debug["blocked_recovery_omega"] = self.blocked_recovery_omega
+        # Während der Scan-Phase nicht sofort losfahren, sondern erst nach einer besseren Lücke suchen.
+        if self.blocked_recovery_phase == "scan":
+            return self.apply_blocked_recovery_turn(
+                debug,
+                self.blocked_recovery_omega_cmd,
+                "blocked_recovery_scanning_no_gap_yet",
+            )
 
-        return debug    
+        # Falls während des Zurückdrehens kurz kein Ziel sichtbar ist, weiter zur gespeicherten Lücke zurückdrehen.
+        if self.blocked_recovery_phase == "return":
+            return self.apply_blocked_recovery_turn(
+                debug,
+                -self.blocked_recovery_omega_cmd,
+                "blocked_recovery_returning_to_best_gap",
+            )
+
+        return debug
 
     def cbFollowLane(self, msg):
         lane_error = float(msg.data)
@@ -790,9 +965,21 @@ class ControlLaneNode:
             self.latest_debug = debug
             return
 
-        # Ab hier gibt es wieder ein gültiges Ziel oder normales Lane-Following.
-        # Deshalb darf der Blocked-Recovery-Zustand zurückgesetzt werden.
-        self.reset_blocked_recovery()
+        if self.blocked_recovery_active and target_x is not None:
+            target_x, debug, recovery_done = self.handle_blocked_recovery_candidate(target_x, debug)
+
+            if not recovery_done:
+                debug["error"] = 0.0
+                debug["v"] = self.v
+                debug["omega"] = self.a
+
+                self.pub_debug_plan.publish(String(data=json.dumps(debug)))
+                self.latest_debug = debug
+                return
+
+            self.reset_blocked_recovery()
+        elif target_x is None:
+            self.reset_blocked_recovery()
 
         if target_x is None:
             post_target_x, post_velocity, debug = self.get_post_avoidance_target(lane_error, debug)

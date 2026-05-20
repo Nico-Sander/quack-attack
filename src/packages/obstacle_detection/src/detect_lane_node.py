@@ -102,7 +102,7 @@ class DetectLaneNode:
 
         # Load weights
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(current_dir, "../models/lane_segmentation.pth")
+        model_path = os.path.join(current_dir, "../models/lane_segmentation_002_model.pth")
 
         if not os.path.exists(model_path):
             rospy.logerr(f"Model weights not found at {model_path}")
