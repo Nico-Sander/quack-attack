@@ -13,14 +13,14 @@
         "intersection": {
             "straight_before_turn": {"v": 0.25, "omega": 0.0},
             "durations": {
-                "LEFT": 0.30,
+                "LEFT": 0.40,
                 "RIGHT": 0.35,
                 "STRAIGHT": 0.0
             },
             "initial_turn": {
                 "LEFT": {"v": 0.25, "omega": 2.0},
                 "RIGHT": {"v": 0.25, "omega": -3.5},
-                "STRAIGHT": {"v": 0.25, "omega": 0.4}
+                "STRAIGHT": {"v": 0.25, "omega": 0.35}
             }
         }
     },
@@ -34,9 +34,9 @@
     "switch_control": {
         "timers": {
             "stop_duration": 3.0,
-            "red_line_ignore_duration": 3.0,
+            "red_line_ignore_duration": 2.5,
             "turn_durations": {
-                "LEFT": 2.5,
+                "LEFT": 2.4,
                 "RIGHT": 1.2,
                 "STRAIGHT": 2.0
             }

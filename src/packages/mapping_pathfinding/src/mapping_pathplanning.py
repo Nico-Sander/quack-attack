@@ -9,13 +9,13 @@ from std_msgs.msg import Int32, String
 from custom_enums import DriveMode, TurnDirection
 
 
-# Aktueller Graph:
+# Recent Graph:
 # A1 -> B1
 # A2 -> B4
 # A3 -> B3
-# A4 keine Verbindung
+# A4 no connection
 # B1 -> A1
-# B2 keine Verbindung
+# B2 no connection
 # B3 -> A3
 # B4 -> B2
 CITY = {
@@ -23,20 +23,19 @@ CITY = {
         1: ("B", 1),
         2: ("B", 4),
         3: ("B", 3),
-        # 4: keine Verbindung
+        # 4: no connection
     },
     "B": {
         1: ("A", 1),
-        # 2: keine Verbindung
+        # 2: no connection
         3: ("A", 3),
         4: ("A", 2),
     },
 }
 
-
-# Port-Konvention:
-# 1, 2, 3, 4 liegen zyklisch um die Kreuzung.
-# OPPOSITE[entry_port] ist "geradeaus raus".
+# Port convention:
+# Ports 1, 2, 3, and 4 are arranged cyclically around the intersection.
+# OPPOSITE[entry_port] is the straight-ahead exit port.
 OPPOSITE = {
     1: 3,
     2: 4,
@@ -58,10 +57,10 @@ RIGHT_OF = {
     2: 1,
 }
 
+# IDs of regular traffic signs.
+# Everything else is treated as a gate.
+# In your current setup, these are the 52h13 traffic sign IDs.
 
-# IDs von normalen Verkehrsschildern.
-# Alles andere wird als Gate/Tor behandelt.
-# Bei dir sind das aktuell die 52h13-Verkehrsschilder.
 KNOWN_SIGN_IDS = {1, 2, 3, 4}
 
 
@@ -113,9 +112,9 @@ class GraphMap:
         """
         edge = ("A", 1, "B", 1)
 
-        Bedeutung:
-        Bot fährt gerade von A Port 1 nach B Port 1.
-        Der nächste Kreuzungsknoten ist also B.
+        Meaning:
+        The bot is currently driving from A port 1 to B port 1.
+        Therefore, the next intersection node is B.
         """
         from_node, from_port, to_node, to_port = edge
         edge_key = self._edge_key(from_node, from_port, to_node, to_port)
@@ -128,13 +127,13 @@ class GraphMap:
 
     def current_node(self):
         """
-        Knoten, den der Bot als nächstes erreicht.
+        Node that the bot will reach next.
         """
         return self.current_edge[2]
 
     def entry_port(self):
         """
-        Port, über den der Bot in den aktuellen Knoten hineinfährt.
+        Port through which the bot enters the current node.
         """
         return self.current_edge[3]
 
@@ -175,8 +174,8 @@ class GraphMap:
 
     def move(self, direction):
         """
-        Wird aufgerufen, nachdem eine Kreuzung wirklich fertig durchfahren wurde.
-        Input: TurnDirection.LEFT / STRAIGHT / RIGHT oder String.
+        Called after an intersection has actually been completed.
+        Input: TurnDirection.LEFT / STRAIGHT / RIGHT or a string.
         """
         if not isinstance(direction, str):
             direction = direction.name
@@ -227,7 +226,7 @@ class GraphMap:
 
     def record_gate(self, gate_id, color=None):
         """
-        Schreibt Gate-Information auf die aktuell befahrene Kante.
+        Writes gate information to the currently driven edge.
         """
         if self.current_edge is None or self.current_edge_key is None:
             return False
