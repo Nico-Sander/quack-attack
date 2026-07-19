@@ -47,9 +47,36 @@ class DashboardNode:
 
         rospy.loginfo(f"[{self.node_name}] Dashboard started for {self.vehicle_name}")
 
+    # Discrete palette (BGR). Muted, low-saturation tones on dark background.
+    FONT = cv2.FONT_HERSHEY_DUPLEX
+    C_TEXT = (200, 200, 200)      # light grey
+    C_MUTED = (140, 140, 140)     # dim grey
+    C_ACCENT = (170, 150, 90)     # muted teal/blue
+    C_CRUISE = (150, 190, 150)    # soft green
+    C_AVOID = (120, 175, 210)     # soft amber
+    C_ESCAPE = (120, 130, 220)    # soft red
+    C_WAIT = (110, 170, 200)      # soft yellow
+    C_BLOCKED = (90, 90, 200)     # muted red
+    C_FREE = (120, 170, 120)      # muted green
+    C_SELECTED = (180, 175, 110)  # muted cyan
+    C_TARGET = (200, 160, 120)    # muted blue
+    C_LINE = (210, 210, 210)      # lane walls
+
+    def label(self, img, text, org, color=None, scale=0.5, thickness=1):
+        cv2.putText(img, text, org, self.FONT, scale, color or self.C_TEXT,
+                    thickness, cv2.LINE_AA)
+
+    def state_color(self, state):
+        return {
+            "CRUISE": self.C_CRUISE,
+            "AVOID": self.C_AVOID,
+            "ESCAPE_ROTATE": self.C_ESCAPE,
+            "WAITING": self.C_WAIT,
+        }.get(state, self.C_MUTED)
+
     def placeholder(self, height, width, text):
         img = np.zeros((height, width, 3), dtype=np.uint8)
-        cv2.putText(img, text, (20, height // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (180, 180, 180), 2)
+        self.label(img, text, (16, height // 2), self.C_MUTED, 0.55, 1)
         return img
 
     def decode_image(self, msg):
@@ -142,14 +169,15 @@ class DashboardNode:
         x_off, y_off, w, h = self.obstacle_roi
         return int(x_off + self.clamp01(x_norm) * w), int(y_off + self.clamp01(y_norm) * h)
 
-    def apply_overlay(self, img):
-        plan = self.latest_plan if isinstance(self.latest_plan, dict) else {}
-        h, w = img.shape[:2]
-        if not plan:
-            cv2.putText(img, "No free_path_plan", (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 180, 255), 2)
-            return img
+    @staticmethod
+    def fmt(value, digits=2):
+        try:
+            return f"{float(value):+.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
 
-        stale = (time.time() - self.last_plan_time) > self.plan_timeout
+    def draw_geometry(self, img, plan):
+        """Draw the planning band, lane walls, intervals and target line."""
         y_min = self.clamp01(plan.get("plan_y_min", 0.5))
         y_max = self.clamp01(plan.get("plan_y_max", 0.92))
         if y_max <= y_min:
@@ -164,80 +192,85 @@ class DashboardNode:
 
         x1_band, y1 = self.map_point(0.0, y_min)
         x2_band, y2 = self.map_point(1.0, y_max)
-        cv2.rectangle(img, (x1_band, y1), (x2_band, y2), (180, 180, 180), 2)
+        cv2.rectangle(img, (x1_band, y1), (x2_band, y2), self.C_MUTED, 1)
 
         lane_x1, _ = self.map_point(x_left, y_min)
         lane_x2, _ = self.map_point(x_right, y_min)
-        cv2.line(img, (lane_x1, y1), (lane_x1, y2), (255, 255, 255), 2)
-        cv2.line(img, (lane_x2, y1), (lane_x2, y2), (255, 255, 255), 2)
+        cv2.line(img, (lane_x1, y1), (lane_x1, y2), self.C_LINE, 2)
+        cv2.line(img, (lane_x2, y1), (lane_x2, y2), self.C_LINE, 2)
 
-        # Only draw green/yellow planning regions when there is a relevant blocked interval.
         if blocked:
             for left, right in free:
                 x1, _ = self.map_point(left, y_min)
                 x2, _ = self.map_point(right, y_max)
-                self.draw_rect_alpha(img, x1, y1, x2, y2, (0, 170, 0), 0.18)
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 220, 0), 2)
-
+                self.draw_rect_alpha(img, x1, y1, x2, y2, self.C_FREE, 0.14)
             if selected_interval is not None:
                 x1, _ = self.map_point(selected_interval[0], y_min)
                 x2, _ = self.map_point(selected_interval[1], y_max)
-                self.draw_rect_alpha(img, x1, y1, x2, y2, (0, 220, 220), 0.28)
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 255), 3)
-
+                self.draw_rect_alpha(img, x1, y1, x2, y2, self.C_SELECTED, 0.22)
+                cv2.rectangle(img, (x1, y1), (x2, y2), self.C_SELECTED, 2)
             for left, right in blocked:
                 x1, _ = self.map_point(left, y_min)
                 x2, _ = self.map_point(right, y_max)
-                self.draw_rect_alpha(img, x1, y1, x2, y2, (0, 0, 220), 0.35)
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                self.draw_rect_alpha(img, x1, y1, x2, y2, self.C_BLOCKED, 0.28)
+                cv2.rectangle(img, (x1, y1), (x2, y2), self.C_BLOCKED, 1)
 
         target_x = plan.get("target_x", None)
         if isinstance(target_x, (int, float)):
             tx, _ = self.map_point(target_x, 0.0)
-            cv2.line(img, (tx, 0), (tx, h - 1), (255, 0, 0), 3)
-            cv2.putText(img, "target", (tx + 6, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 0), 2)
+            cv2.line(img, (tx, y1), (tx, y2), self.C_TARGET, 2)
+            self.label(img, "target", (tx + 6, y1 + 16), self.C_TARGET, 0.45, 1)
 
-        reason = str(plan.get("reason", "unknown"))
-        active = bool(plan.get("avoidance_active", False))
-        status = "AVOIDANCE" if active else "LANE FOLLOWING"
-        color = (0, 0, 255) if active else (0, 255, 0)
+    def draw_panel(self, img, plan, stale):
+        """Semi-transparent info panel with the command and controller status."""
+        state = str(plan.get("state", "AVOIDANCE" if plan.get("avoidance_active") else "CRUISE"))
+        rows = [
+            ("state", state, self.state_color(state)),
+            ("reason", str(plan.get("reason", "-")), self.C_TEXT),
+            ("v (m/s)", self.fmt(plan.get("v", "-")), self.C_TEXT),
+            ("omega (rad/s)", self.fmt(plan.get("omega", "-")), self.C_TEXT),
+            ("target x", self.fmt(plan.get("target_x", "-")), self.C_MUTED),
+            ("front ymax", self.fmt(plan.get("nearest_front_ymax", "-")), self.C_MUTED),
+            ("duckies r/a/rel",
+             f"{plan.get('num_raw_duckies','-')}/{plan.get('num_active_duckies','-')}/"
+             f"{plan.get('num_relevant_duckies','-')}", self.C_MUTED),
+            ("lane", str(plan.get("lane_source", "-")), self.C_MUTED),
+        ]
+
+        pad, line_h, key_w = 12, 22, 130
+        panel_w = 330
+        panel_h = pad * 2 + line_h * len(rows)
+        overlay = img.copy()
+        cv2.rectangle(overlay, (8, 8), (8 + panel_w, 8 + panel_h), (25, 25, 25), -1)
+        cv2.addWeighted(overlay, 0.55, img, 0.45, 0.0, img)
+        cv2.rectangle(img, (8, 8), (8 + panel_w, 8 + panel_h), self.C_MUTED, 1)
+
+        y = 8 + pad + 14
+        for key, val, color in rows:
+            self.label(img, key, (8 + pad, y), self.C_MUTED, 0.45, 1)
+            self.label(img, str(val)[:26], (8 + pad + key_w, y), color, 0.48, 1)
+            y += line_h
+
         if stale:
-            color = (0, 180, 255)
-            status += " / STALE"
+            self.label(img, "STALE", (8 + panel_w - 70, 8 + pad + 14), self.C_ESCAPE, 0.5, 1)
 
-        cv2.putText(img, f"{status}: {reason}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
-
-        # Without this banner a dry run is indistinguishable from a controller that
-        # is stuck at v=0, which is exactly the confusion that costs tuning time.
+        # Without this a dry run is indistinguishable from a controller stuck at v=0,
+        # which is exactly the confusion that costs tuning time.
         if plan.get("dry_run", False):
-            cv2.putText(
-                img,
-                "DRY RUN - no drive commands published",
-                (10, 62),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 200, 255),
-                2,
-            )
+            self.label(img, "DRY RUN - no drive commands published",
+                       (8 + pad, 8 + panel_h + 22), self.C_WAIT, 0.5, 1)
 
-        cv2.putText(
-            img,
-            f"raw:{plan.get('num_raw_duckies','?')} active:{plan.get('num_active_duckies','?')} relevant:{plan.get('num_relevant_duckies','?')} small:{plan.get('num_small_duckies_filtered','?')}",
-            (10, h - 50),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (230, 230, 230),
-            2,
-        )
-        cv2.putText(
-            img,
-            f"v:{plan.get('v','?')} omega:{plan.get('omega','?')} lane:{plan.get('lane_source','?')}",
-            (10, h - 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (230, 230, 230),
-            2,
-        )
+    def apply_overlay(self, img):
+        plan = self.latest_plan if isinstance(self.latest_plan, dict) else {}
+        if not plan:
+            self.label(img, "waiting for free_path_plan ...", (16, 32), self.C_WAIT, 0.55, 1)
+            return img
+
+        stale = (time.time() - self.last_plan_time) > self.plan_timeout
+        # WAITING has no geometry to draw (controller not yet armed).
+        if plan.get("state") != "WAITING":
+            self.draw_geometry(img, plan)
+        self.draw_panel(img, plan, stale)
         return img
 
     def run(self):
@@ -252,10 +285,9 @@ class DashboardNode:
             obstacle = self.scale_bottom(self.img_obstacle)
             obstacle = self.apply_overlay(obstacle)
 
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            cv2.putText(lane, "Lane", (10, 30), font, 0.75, (0, 255, 0), 2)
-            cv2.putText(white, "White mask", (10, 30), font, 0.75, (255, 255, 255), 2)
-            cv2.putText(yellow, "Yellow mask", (10, 30), font, 0.75, (0, 255, 255), 2)
+            self.label(lane, "lane", (12, 24), self.C_TEXT, 0.5, 1)
+            self.label(white, "white mask", (12, 24), self.C_TEXT, 0.5, 1)
+            self.label(yellow, "yellow mask", (12, 24), self.C_TEXT, 0.5, 1)
 
             top = cv2.hconcat([lane, self.pad_vertical, white, self.pad_vertical, yellow])
             dashboard = cv2.vconcat([top, self.pad_horizontal, obstacle])

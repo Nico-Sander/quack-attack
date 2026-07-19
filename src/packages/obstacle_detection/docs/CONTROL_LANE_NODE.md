@@ -1,385 +1,152 @@
 # control_lane_node.py
 
-`control_lane_node.py` ist der zentrale Fahr-Node dieses Packages. Er verbindet das normale Lane-Following aus Challenge 1 mit einer lokalen Ausweichlogik für Duckies.
+`control_lane_node.py` ist der zentrale Fahr-Node. Er wurde von Grund auf neu geschrieben
+(„follow-the-gap"-Regler mit kleiner Zustandsmaschine), um das frühere Problem strukturell
+zu beseitigen: Der alte Regler blieb vor Enten stehen (`v=0, omega=0`) und erreichte den
+Recovery-Zustand oft nie.
 
-Der Node fährt grundsätzlich **nicht dauerhaft nach Hindernisplanung**, sondern nutzt das Lane-Following als Basis. Die Ausweichlogik greift nur ein, wenn ein ausreichend großes Duckie im relevanten Bildbereich liegt und den normalen Lane-Target-Bereich blockiert.
+## Leitprinzip: nie einfrieren
 
----
-
-## Eingänge und Ausgänge
-
-### Eingänge
-
-```text
-/<VEHICLE_NAME>/detect/lane
-```
-
-Normaler Lane-Error als `Float64`. Dieser Wert treibt das Challenge-1-Lane-Following.
+Es gibt **genau eine Stelle**, die den Fahrbefehl schreibt (das „output guard" am Ende von
+`GapPlanner.step()`), und diese erzwingt kompromisslos die Invariante:
 
 ```text
-/<VEHICLE_NAME>/detect/lane_borders
+der Bot wird NIE mit (v == 0 UND omega == 0) kommandiert
 ```
 
-JSON mit gelber und weißer Linienposition sowie Validitätsinformationen.
+Wenn es keinen Weg nach vorn gibt, **dreht** sich der Bot auf der Stelle, um eine Lücke zu
+suchen, statt anzuhalten. Findet er länger keine Lücke, lockert er schrittweise seine
+Anforderungen (`ESCAPE_ROTATE`-Relaxation), bis sich eine öffnet. Dadurch kann er immer
+Fortschritt machen.
+
+## Architektur
+
+Die reine Entscheidungslogik steckt in der Klasse `GapPlanner` und ist bewusst frei von
+`rospy`, damit sie ohne ROS mit synthetischen Eingaben getestet werden kann
+(`step(now) -> (v, omega, debug)`). Die ROS-Klasse `ControlLaneNode` cached nur die
+Sensordaten in den Planner und ruft `step()` mit fester Rate (10 Hz) auf.
+
+Lane-Following liefert die **Route** (inklusive der U-Kurve); die Ausweichschicht verändert
+nur die Lenkung und klemmt sie hart in den Linien-Korridor.
+
+### Readiness-Gate beim Start
+
+Der Controller sendet erst dann Fahrbefehle, wenn **alle drei** Sensordaten mindestens
+einmal eingetroffen sind (`/detect/lane`, `/detect/lane_borders`, `/detect/duckie_BB`). Bis
+dahin steht der Bot (`v=0, omega=0`) und meldet `state = WAITING` ans Dashboard. Das
+verhindert, dass er sofort auf Default-/Stale-Daten losfährt, während der YOLO-Node beim Start
+noch das Modell lädt. Dies ist der einzige legitime Fall von `(0,0)` — der Regler ist noch
+nicht „scharf".
+
+### Eingänge und Ausgänge
+
+Eingänge:
 
 ```text
-/<VEHICLE_NAME>/detect/duckie_BB
+/<VEHICLE_NAME>/detect/lane           Float64, Lane-Error [-1,1] (positiv = Zentrum links)
+/<VEHICLE_NAME>/detect/lane_borders   JSON: yellow_x, white_x, yellow_valid, white_valid, valid
+/<VEHICLE_NAME>/detect/duckie_BB      JSON: Liste aller Duckie-Bounding-Boxes (normiert 0..1)
 ```
 
-JSON mit allen erkannten Duckie-Bounding-Boxes.
-
-### Ausgänge
+Ausgänge:
 
 ```text
-/<VEHICLE_NAME>/car_cmd_switch_node/cmd
+/<VEHICLE_NAME>/car_cmd_switch_node/cmd   Twist2DStamped (v, omega; omega positiv = links)
+/<VEHICLE_NAME>/debug/free_path_plan       JSON-Debugausgabe für das Dashboard
 ```
 
-Fahrbefehl als `Twist2DStamped` mit `v` und `omega`.
+Konventionen (normierte Bildkoordinaten):
 
 ```text
-/<VEHICLE_NAME>/debug/free_path_plan
+x:            0 = linker Bildrand, 1 = rechter Bildrand
+duckie ymax:  größer = näher am Bot (unten im Bild)
+lane error:   positiv = Fahrbahnzentrum liegt LINKS
+omega:        positiv = nach links drehen
 ```
 
-JSON-Debugausgabe für Dashboard und Analyse.
+## Pro Takt berechnete Signale
 
----
+1. **Korridor `[L, R]`** aus den Linienpositionen, mit `lane_margin` als hartem Abstand.
+   Die Linien-Validität wird **entprellt**: Eine Seite wird erst nach `LANE_HOLD_FRAMES`
+   aufeinanderfolgenden ungültigen Frames geöffnet (verhindert, dass ein einzelner
+   Flacker-Frame eine harte Grenze in eine offene Seite verwandelt).
+   Wichtig: Der Lane-Node meldet Gelb immer als linke und Weiß als rechte Spalte, auch nach
+   der U-Kurve. Der Korridor wird daher **reihenfolge-unabhängig** aus den beiden
+   Wandkandidaten gebildet (`links = min`, `rechts = max`) — es wird keine Farb-Semantik
+   „Gelb = linke Wand" angenommen.
+2. **Blockierte Intervalle**: Jede Duckie-Box `[xmin, xmax]` wird um
+   `duckie_margin_base + duckie_margin_gain * Nähe` verbreitert, auf den Korridor geklemmt
+   und überlappende Intervalle werden zusammengeführt. Eine zuletzt gesehene Ente wird noch
+   `DUCKIE_HOLD_TIME` gehalten, damit ein naher Blindflug (Ente verlässt das Sichtfeld)
+   sicher bleibt.
+3. **Freie Intervalle** = Korridor minus blockierte Intervalle. Das **breiteste** freie
+   Intervall (`best_gap`) wird gewählt, bei Gleichstand näher am Ziel.
+4. **Front-Nähe** (`front_ymax`) = `ymax` der nächsten Ente, deren Intervall den zentralen
+   Front-Streifen um das Ziel überlappt.
+5. **Zielspalte `goal_x`**: `lane_target_x` wenn die Linien vertrauenswürdig sind, sonst ein
+   fester **U-Kurven-Bias nach links** (`heading_bias()`, der Umbau-Punkt für einen späteren
+   encoder-gestützten Turn).
 
-## Gesamtlogik
+## Zustandsmaschine
 
-Die Fahrentscheidung passiert bei jeder neuen Lane-Error-Nachricht in `cbFollowLane()`.
+Eine einzige Funktion (`step()`) besitzt alle Übergänge, getrieben von skalaren Signalen und
+Mindest-Verweilzeiten.
 
-Vereinfacht:
+| Zustand | v | omega | Kurzbeschreibung |
+|---|---|---|---|
+| **CRUISE** | `v_cruise` | `k_steer*(0.5 - goal_x)*2` | Freie Fahrbahn, Lane-Following. |
+| **AVOID** | Rampe `v_avoid → v_min` nach Nähe (bzw. `v_min` bei unbekannter Geometrie) | Lenkung auf `target_x` (Ziel, in die Lücke geklemmt) | Ente beeinflusst den Fahrweg; um sie herumlenken. |
+| **ESCAPE_ROTATE** | `0.0` | `escape_dir * omega_rotate` | Kein Weg nach vorn: auf der Stelle zur freieren Seite drehen. **Immer omega ≠ 0.** |
+
+Übergänge (vereinfacht):
 
 ```text
-1. Lane-Error empfangen
-2. choose_avoidance_target() aufrufen
-3. Wenn kein Duckie relevant ist:
-       normales Lane-Following
-4. Wenn Duckie blockiert:
-       Ausweichziel berechnen
-5. Wenn kein gültiger Bereich existiert:
-       Blocked-Recovery
-6. Wenn Ausweichziel sehr weit weg liegt:
-       zuerst auf der Stelle in Richtung Ziel drehen
-7. PID-Regelung berechnen
-8. v und omega publizieren
+kein befahrbarer Weg voraus (keine Lücke ODER Front blockiert)  -> ESCAPE_ROTATE
+Ziel blockiert / Front nah / unbekannte Geometrie               -> AVOID
+sonst (Fahrbahn frei, nach kurzer Halte-Zeit)                   -> CRUISE
 ```
 
----
+Details:
+- **`ESCAPE_ROTATE`-Richtung**: zur Seite mit mehr freier Fläche; bei nur einer sichtbaren
+  Linie zur offenen Seite; bei Gleichstand nach links (U-Kurve).
+- **Mindest-Verweilzeit** (`escape_min_dwell`): verhindert Zittern zwischen Drehen und Fahren.
+- **Relaxation** (`escape_relax_after`): Nach längerem erfolglosen Drehen werden
+  `gap_min_width` und die Duckie-Verbreiterung schrittweise verkleinert, bis eine Lücke
+  befahrbar wird — die formale Garantie gegen dauerhaftes Feststecken.
+- **Ziel-Hysterese**: kleines Links/Rechts-Umschalten zwischen ähnlichen Lücken wird gedämpft.
+- **Clear-Hold** (`CLEAR_HOLD_TIME`): AVOID fällt erst nach kurzzeitig durchgehend freier
+  Fahrbahn zurück auf CRUISE, damit ein einzelner „alles frei"-Frame mitten im Manöver nicht
+  sofort zurückregelt.
 
-## 1. Normales Lane-Following
-
-Wenn kein relevanter Duckie-Bereich vorhanden ist, wird der Lane-Error direkt geregelt:
+## Output Guard (einziger Schreiber)
 
 ```text
-/detect/lane -> PID -> v, omega
+omega = clamp(omega, -omega_max, +omega_max)
+target_x ist bereits in [L, R] geklemmt  -> keine Linie wird überfahren
+falls |v| ~ 0 UND |omega| ~ 0:  omega = escape_dir * omega_rotate   # never-freeze
+publish(v, omega)
 ```
 
-Dieser Fall ist bewusst nahe an Challenge 1 gehalten. Dadurch bleibt das normale Fahrverhalten außerhalb von Duckies möglichst stabil und bekannt.
-
-Der normale Regler nutzt die Parameter aus `pid`:
-
-```text
-p, i, d, max_vel
-```
-
----
-
-## 2. Fahrbereich aus Lane-Borders
-
-Die Straße wird über die erkannten Linien begrenzt:
-
-```text
-gelbe Linie = linke harte Grenze
-weiße Linie = rechte harte Grenze
-```
-
-Dabei wird nicht blind jeder Fallback-Wert verwendet. Der Lane-Node publiziert zusätzlich:
-
-```json
-{
-  "yellow_valid": true,
-  "white_valid": true
-}
-```
-
-Dadurch kann der Controller unterscheiden:
-
-```text
-Linie wirklich erkannt
-oder nur Fallback-Wert vorhanden
-```
-
-### Wenn beide Linien sichtbar sind
-
-```text
-Fahrbereich = gelbe Linie bis weiße Linie
-```
-
-### Wenn nur die weiße Linie sichtbar ist
-
-```text
-rechte Grenze = weiße Linie
-linke Seite = offen
-```
-
-Das ist wichtig, weil die Challenge-Spur breiter sein kann als das sichtbare Kamerabild. Wenn die gelbe Linie nicht sichtbar ist, darf der linke Bereich nicht künstlich blockiert werden.
-
-### Wenn nur die gelbe Linie sichtbar ist
-
-```text
-linke Grenze = gelbe Linie
-rechte Seite = offen
-```
-
-### Wenn keine aktuelle Linie vorhanden ist
-
-Der Controller nutzt kurzzeitig den letzten gültigen Fahrbereich oder die Default-Grenzen.
-
----
-
-## 3. Duckie-Filterung
-
-Der Controller übernimmt nicht jede YOLO-Detection sofort als relevantes Hindernis.
-
-Ein Duckie wird nur aktiv berücksichtigt, wenn es:
-
-```text
-- Klasse duckie hat,
-- groß genug ist,
-- im vertikalen Planungsfenster liegt,
-- den normalen Fahrweg beeinflusst.
-```
-
-### Mindestgröße
-
-Über diese Parameter werden weit entfernte oder sehr kleine Duckies ignoriert:
-
-```text
-min_duckie_width_px
-min_duckie_height_px
-min_duckie_area_px
-```
-
-Dadurch reagiert der Bot nicht zu früh auf kleine Detections am Horizont.
-
-### Detection-Hold
-
-YOLO kann einzelne Frames verpassen. Damit der rote Sperrbereich nicht flackert, hält der Controller erkannte Duckies kurz weiter:
-
-```text
-duckie_hold_time
-duckie_missed_frames_before_clear
-```
-
-Das macht die Planung reproduzierbarer.
-
----
-
-## 4. Blockierte und freie Bereiche
-
-Für jedes relevante Duckie wird aus der Bounding-Box ein horizontaler Sperrbereich berechnet:
-
-```text
-blocked_left  = duckie_xmin - duckie_x_margin
-blocked_right = duckie_xmax + duckie_x_margin
-```
-
-Der Sperrbereich wird auf den aktuellen Fahrbereich begrenzt. Mehrere überlappende Sperrbereiche werden zusammengeführt.
-
-Aus dem Fahrbereich und den blockierten Intervallen entstehen freie Intervalle:
-
-```text
-Fahrbereich: [lane_left, lane_right]
-Blockiert:  [b1_left, b1_right], [b2_left, b2_right]
-Frei:       Bereiche dazwischen
-```
-
-Die Mindestbreite eines gültigen freien Bereichs wird über `min_free_width_px` festgelegt.
-
----
-
-## 5. Offene Seite bei fehlender Linie
-
-Wenn eine Linie fehlt, wird diese Seite als offen behandelt.
-
-Beispiel:
-
-```text
-weiß sichtbar, gelb nicht sichtbar
--> rechts harte Grenze
--> links offene Seite
-```
-
-Damit der offene Bereich in der Bewertung nicht fälschlich als zu klein gilt, bekommt ein freies Intervall am offenen Bildrand einen Bonus:
-
-```text
-open_side_width_bonus
-```
-
-Das bedeutet nicht, dass der Bot Linien überfahren darf. Sichtbare Linien bleiben harte Grenzen. Nur die nicht sichtbare Seite wird als offen interpretiert.
-
----
-
-## 6. Auswahl der Ausweichrichtung
-
-Der Controller fährt nicht grundsätzlich zur breitesten Lücke. Die Entscheidung ist gestuft:
-
-```text
-1. Normalen Lane-Target aus Lane-Error berechnen.
-2. Prüfen, ob dieser Target-Bereich von einem Duckie blockiert ist.
-3. Wenn nein:
-       weiter Lane-Following.
-4. Wenn ja:
-       freien Bereich links oder rechts neben dem Duckie suchen.
-5. Zielpunkt innerhalb des ausgewählten freien Bereichs setzen.
-```
-
-Der Abstand zum Duckie wird durch `duckie_x_margin`, `lane_target_block_margin` und `escape_clearance` bestimmt.
-
-### Side-Lock
-
-Damit der Bot nicht zwischen links und rechts hin und her wechselt, wird die gewählte Ausweichseite kurz bevorzugt:
-
-```text
-avoidance_side_lock_time
-avoidance_side_lock_bonus
-```
-
----
-
-## 7. Drehen auf der Stelle bei großem Ausweichfehler
-
-Wenn das Ausweichziel weit links oder rechts liegt, reicht normales Vorwärtsfahren mit Lenkung manchmal nicht aus. Der Bot würde sonst während des Drehens weiter auf die Ente zufahren.
-
-Dafür gibt es einen zusätzlichen Zustand:
-
-```text
-avoidance_turn_in_place
-```
-
-Ablauf:
-
-```text
-1. Ausweichziel liegt weit außerhalb der Bildmitte.
-2. Vorwärtsgeschwindigkeit wird auf 0 gesetzt.
-3. Bot dreht auf der Stelle in Richtung target_x.
-4. Sobald der Fehler klein genug ist, fährt er wieder mit avoidance_vel weiter.
-```
-
-Die Richtung wird aus dem Vorzeichen des Ausweichfehlers bestimmt:
-
-```text
-target links  -> links drehen
-target rechts -> rechts drehen
-```
-
-Wichtige Parameter:
-
-```text
-avoidance_turn_in_place_error_enter
-avoidance_turn_in_place_error_exit
-avoidance_turn_in_place_omega
-```
-
-Die unterschiedlichen Enter-/Exit-Schwellen verhindern ständiges Umschalten.
-
----
-
-## 8. Blocked-Recovery-Zustand
-
-Manchmal gibt es keinen gültigen freien Bereich, zum Beispiel in engen Kurven oder wenn die sichtbare Szene ungünstig ist.
-
-Dann liefert `choose_avoidance_target()` keinen gültigen Zielpunkt. In diesem Fall greift der Blocked-Recovery-Zustand.
-
-Ablauf:
-
-```text
-1. Kein gültiger freier Bereich gefunden.
-2. Bot wartet zunächst blocked_recovery_delay Sekunden.
-3. Danach dreht er langsam und scannt die Szene.
-4. Während des Scans merkt er sich den besten gefundenen Zielbereich.
-5. Nach der Scanphase nutzt er diesen Bereich oder dreht zur besten Position zurück.
-```
-
-Wichtige Parameter:
-
-```text
-blocked_recovery_delay
-blocked_recovery_omega
-blocked_recovery_min_turn_time
-blocked_recovery_min_angle_deg
-blocked_recovery_max_angle_deg
-```
-
-Dieser Zustand ist nur für Situationen gedacht, in denen keine direkte Durchfahrt berechnet werden kann.
-
----
-
-## 9. Post-Avoidance und Rückkehr zur Spur
-
-Wenn das Duckie aus dem Kamerabild verschwindet, ist der Bot oft noch nicht vollständig daran vorbei. Würde er sofort wieder zur Spurmitte regeln, könnte er zurück in die Ente fahren.
-
-Deshalb gibt es zwei Phasen:
-
-```text
-1. avoidance_clear_hold_time:
-       letzter Ausweichzielpunkt wird kurz gehalten
-
-2. lane_reentry_blend_time:
-       Zielpunkt wird weich zurück zum normalen Lane-Target überblendet
-```
-
-Die Geschwindigkeit in dieser Phase wird über `reentry_vel` bestimmt.
-
----
-
-## 10. PID-Regelung
-
-Es gibt zwei PID-Sätze:
-
-### Normaler Lane-PID
-
-```text
-p, i, d
-```
-
-Wird im normalen Lane-Following verwendet.
-
-### Avoidance-PID
-
-```text
-avoidance_kp
-avoidance_ki
-avoidance_kd
-```
-
-Wird beim aktiven Ausweichen verwendet. Der Moduswechsel setzt den Integralanteil zurück und unterdrückt den D-Sprung beim Umschalten.
-
-Zusätzlich wird der Ausweichfehler mit `avoidance_steering_gain` skaliert.
-
----
-
-## 11. Debug-Ausgabe
-
-Der Controller publiziert kontinuierlich ein JSON auf:
-
-```text
-/<VEHICLE_NAME>/debug/free_path_plan
-```
-
-Typische Felder:
-
-```text
-reason                    aktueller Zustand / Entscheidungsgrund
-avoidance_active           ob Ausweichlogik aktiv ist
-target_x                   aktueller Zielpunkt
-lane_target_x              normaler Zielpunkt aus Lane-Following
-blocked_intervals          rote Sperrbereiche
-free_intervals             freie Bereiche
-selected_free_interval     gewählter Ausweichbereich
-left_open / right_open     ob eine Seite wegen fehlender Linie offen ist
-v / omega                  aktuell berechneter Fahrbefehl
-```
-
-Diese Daten werden vom Dashboard visualisiert und sind die wichtigste Quelle für Debugging.
+## Wichtige Fehlerfälle und ihre Behandlung
+
+| Fehlerfall | Behandlung |
+|---|---|
+| Nahe Ente verlässt das enge Sichtfeld (Blindflug) | Memory-Hold der Box + langsame Annäherung + Ziel-Bias weg von der zuletzt gesehenen Seite. |
+| Offener Bulb, beide Linien ungültig, Lane-Error ≈ 0 | Lane-Error wird nicht als „freie Straße" vertraut: AVOID mit U-Kurven-Bias bei `v_min`. |
+| Linien-Flackern | Entprellung (`LANE_HOLD_FRAMES`), bevor eine Seite geöffnet wird. |
+| Links/Rechts-Flackern | Richtungs-Hysterese + Mindest-Verweilzeit im ESCAPE. |
+| Rückweg der U-Kurve (Wände vertauscht) | Reihenfolge-unabhängiger Korridor, keine Farb-Semantik. |
+
+## Debug-Ausgabe
+
+Der Controller publiziert bei jedem Takt ein JSON auf `/<VEHICLE_NAME>/debug/free_path_plan`,
+das vom Dashboard visualisiert wird (Felder u. a. `state`, `reason`, `lane_left`,
+`lane_right`, `blocked_intervals`, `free_intervals`, `selected_free_interval`, `target_x`,
+`nearest_front_ymax`, `v`, `omega`).
+
+## Testen ohne ROS
+
+Weil `GapPlanner` `rospy`-frei ist, kann die Entscheidungslogik mit einem kleinen Harness
+getrieben werden, der synthetische Signale einspeist (freie Fahrbahn, Ente links/rechts,
+Ente direkt voraus, drei Enten im Bulb, beide Linien ungültig, Relaxation). Jeder Zweig wird
+gegen die Never-Freeze-Invariante geprüft.

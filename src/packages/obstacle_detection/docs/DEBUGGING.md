@@ -1,6 +1,8 @@
 # Debugging und typische Fehlerbilder
 
 Dieses Dokument beschreibt, wo man bei typischen Problemen zuerst suchen sollte.
+Für die Fahrlogik siehe [`CONTROL_LANE_NODE.md`](CONTROL_LANE_NODE.md) und die Parameter
+in [`PARAMETERS.md`](PARAMETERS.md).
 
 ---
 
@@ -14,9 +16,16 @@ rostopic hz /$VEHICLE_NAME/detect/lane
 rostopic echo /$VEHICLE_NAME/car_cmd_switch_node/cmd
 ```
 
-Wenn `/detect/lane` keine Werte liefert, läuft der Lane-Node nicht korrekt oder im falschen Namespace.
+Wenn `/detect/lane` keine Werte liefert, läuft der Lane-Node nicht korrekt oder im falschen
+Namespace.
 
-Wenn `car_cmd_switch_node/cmd` keine Werte liefert, wird `cbFollowLane()` nicht getriggert oder das Topic ist falsch.
+Der Controller sendet Fahrbefehle mit fester Rate (10 Hz), sobald er läuft — unabhängig
+davon, ob neue Sensordaten ankommen. Kommt auf `car_cmd_switch_node/cmd` nichts an, läuft
+der Node nicht oder das Topic/der Namespace stimmt nicht.
+
+Hinweis: Der Controller kommandiert konstruktionsbedingt **nie** dauerhaft `v=0, omega=0`.
+Steht der Bot trotzdem still, ist entweder der Node nicht aktiv, oder der nachgelagerte
+`car_cmd_switch_node`/Wheels-Driver nimmt die Befehle nicht an.
 
 ---
 
@@ -28,72 +37,28 @@ Prüfen:
 rostopic echo /$VEHICLE_NAME/detect/lane_borders
 ```
 
-Wichtig sind:
-
-```text
-yellow_valid
-white_valid
-```
-
-Im Dashboard prüfen:
-
-```text
-Yellow mask
-White mask
-```
-
-Die Duckie-Bereiche sollten dort aus der Maske entfernt sein.
+Wichtig sind `yellow_valid` und `white_valid`. Im Dashboard die `Yellow mask` / `White mask`
+prüfen: Die Duckie-Bereiche sollten dort aus der Maske entfernt sein.
 
 ---
 
-## Rote Sperrbereiche flackern
+## Bot reagiert zu spät / zu früh auf Duckies
 
-Ursachen:
-
-```text
-YOLO erkennt Duckie nicht in jedem Frame
-Confidence schwankt
-Duckie ist noch zu klein
-```
+Der Controller behandelt eine Ente als blockierend, sobald ihr `ymax` im Planungsband liegt
+und ihr (verbreitertes) Intervall den Fahrweg schneidet.
 
 Relevante Parameter:
 
 ```text
-duckie_hold_time
-duckie_missed_frames_before_clear
-confidence_threshold
-min_duckie_area_px
+front_slow_ymax      # ab wann verlangsamt wird
+front_block_ymax     # ab wann gedreht statt gefahren wird
+duckie_margin_base   # seitlicher Grundabstand
+duckie_margin_gain   # zusätzlicher Abstand bei naher Ente
 ```
 
----
-
-## Bot reagiert zu spät auf Duckies
-
-Relevante Parameter:
-
-```text
-y_min
-min_duckie_width_px
-min_duckie_height_px
-min_duckie_area_px
-lane_target_block_margin
-```
-
-`y_min` kleiner machen bedeutet: Duckies werden weiter oben im Bild relevant.
-
----
-
-## Bot reagiert zu früh auf entfernte Duckies
-
-Relevante Parameter:
-
-```text
-min_duckie_width_px
-min_duckie_height_px
-min_duckie_area_px
-```
-
-Diese Werte erhöhen, wenn entfernte Duckies zu früh beeinflussen.
+Reagiert der Bot zu spät: `front_slow_ymax`/`front_block_ymax` senken. Zu früh auf entfernte
+Enten: Rausch-Filter `MIN_DUCKIE_WIDTH/HEIGHT` (Konstanten im Node) bzw. `confidence_threshold`
+in `detect_obstacle_node.json` erhöhen.
 
 ---
 
@@ -102,56 +67,62 @@ Diese Werte erhöhen, wenn entfernte Duckies zu früh beeinflussen.
 Relevante Parameter:
 
 ```text
-duckie_x_margin
-escape_clearance
-min_free_width_px
+duckie_margin_base
+duckie_margin_gain
+gap_min_width
+lane_margin
 ```
 
-Mehr Sicherheitsabstand erzeugt robustere Umfahrungen, kann aber freie Bereiche zu klein machen.
+Mehr Sicherheitsabstand erzeugt robustere Umfahrungen, kann aber freie Bereiche zu klein
+machen (dann öfter `ESCAPE_ROTATE`).
 
 ---
 
-## Bot fährt beim starken Ausweichen zu weit vorwärts
+## Bot dreht sich viel / findet keine Lücke
 
-Wenn das Ziel weit links oder rechts liegt, sollte `avoidance_turn_in_place` aktiv werden.
-
-Relevante Parameter:
-
-```text
-avoidance_turn_in_place_error_enter
-avoidance_turn_in_place_error_exit
-avoidance_turn_in_place_omega
-avoidance_vel
-```
-
-`avoidance_vel` reduziert die Vorwärtsfahrt während der Ausweichphase.
-
----
-
-## Bot bleibt mit `no_valid_escape_target` stehen
-
-Dann findet der Controller keine gültige freie Lücke.
+Zeigt das Dashboard `state = ESCAPE_ROTATE`, hält der Controller keinen befahrbaren Weg nach
+vorn für gegeben und dreht sich, um eine Lücke zu suchen (das ist der beabsichtigte
+Recovery-Zustand, kein Feststecken).
 
 Prüfen im Dashboard:
 
 ```text
+state
 reason
 blocked_intervals
 free_intervals
 selected_free_interval
-left_open / right_open
+nearest_front_ymax
 ```
 
 Relevante Parameter:
 
 ```text
-min_free_width_px
-open_side_width_bonus
-blocked_recovery_delay
-blocked_recovery_omega
-blocked_recovery_min_turn_time
-blocked_recovery_max_angle_deg
+gap_min_width        # kleiner -> schmalere Lücken werden akzeptiert
+omega_rotate         # Drehgeschwindigkeit beim Suchen
+escape_min_dwell     # Mindest-Drehzeit vor erneuter Bewertung
+escape_relax_after   # ab wann Anforderungen gelockert werden
 ```
+
+Dreht der Bot dauerhaft, ohne je eine Lücke zu akzeptieren: `gap_min_width` senken oder
+`escape_relax_after` verkürzen. Die Relaxation garantiert, dass er sich nie dauerhaft
+festdreht, sondern die Anforderungen so lange lockert, bis eine Lücke befahrbar wird.
+
+---
+
+## Bot überfährt eine Linie
+
+Der Zielpunkt wird immer in den Korridor `[linke Linie + lane_margin, rechte Linie - lane_margin]`
+geklemmt. Überfährt der Bot dennoch eine Linie, zuerst prüfen, ob die Linie überhaupt erkannt
+wird:
+
+```bash
+rostopic echo /$VEHICLE_NAME/detect/lane_borders
+```
+
+Ist `white_valid`/`yellow_valid` in der Situation dauerhaft `false` (z. B. stark schräge
+Linie), behandelt der Controller diese Seite nach `LANE_HOLD_FRAMES` als offen. `lane_margin`
+erhöhen für mehr Sicherheitsabstand zu sichtbaren Linien.
 
 ---
 

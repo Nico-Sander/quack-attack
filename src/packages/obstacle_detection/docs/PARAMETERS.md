@@ -7,125 +7,96 @@ config/control_lane_node.json
 config/detect_obstacle_node.json
 ```
 
-Alle Werte in `control_lane_node.json` sind unter `parameters.path_planner` oder `parameters.pid` gruppiert.
+Die Werte in `control_lane_node.json` sind unter `parameters.controller` gruppiert. Der
+Controller wurde bewusst auf wenige, gut interpretierbare Parameter reduziert (15 Stück).
+Geometrie- und Debounce-Konstanten (Planungsband, Frame-Hysterese, Bildgrößen) sind als
+Konstanten direkt im Node hinterlegt und nicht als Parameter ausgelegt.
+
+Wertebereiche der Hardware zur Orientierung:
+
+```text
+v:     0.2 = schnell, 0.1 = mittel, 0.05 = Reibungsgrenze (Räder bleiben stehen)
+omega: 1   = langsame Drehung, 4 = sehr abrupte Drehung
+```
 
 ---
 
-## PID-Parameter für normales Lane-Following
+## Geschwindigkeiten
 
-| Parameter | Bedeutung |
-|---|---|
-| `p` | Proportionalanteil des normalen Lane-Following-Reglers. |
-| `i` | Integralanteil des normalen Lane-Following-Reglers. |
-| `d` | Differentialanteil des normalen Lane-Following-Reglers. |
-| `max_vel` | Normale Vorwärtsgeschwindigkeit im Lane-Following. |
-
----
-
-## Planungsfenster
-
-| Parameter | Bedeutung |
-|---|---|
-| `y_min` | Oberer Rand des vertikalen Bildbereichs, in dem Duckies für die Planung relevant werden. |
-| `y_max` | Unterer Rand des vertikalen Bildbereichs. |
-| `duckie_y_margin` | Toleranz am oberen und unteren Rand des Planungsfensters. |
+| Parameter | Default | Bedeutung |
+|---|---|---|
+| `v_cruise` | 0.10 | Vorwärtsgeschwindigkeit bei freier Fahrbahn (normales Lane-Following). |
+| `v_avoid` | 0.06 | Vorwärtsgeschwindigkeit beim Ausweichen um ein Duckie (oberes Ende der Nähe-Rampe). |
+| `v_min` | 0.06 | Kriechgeschwindigkeit mit kleinem Abstand über der Reibungsgrenze (~0.05). Wird bei naher Ente oder unbekannter Geometrie genutzt. Der Bot fährt nie langsamer, sondern dreht sich stattdessen (siehe `ESCAPE_ROTATE`). |
 
 ---
 
-## Duckie-Sicherheitsbereiche
+## Lenkung
 
-| Parameter | Bedeutung |
-|---|---|
-| `duckie_x_margin` | Seitlicher Sicherheitsabstand, der zur Duckie-Bounding-Box addiert wird. |
-| `lane_target_block_margin` | Zusätzlicher Bereich um ein Duckie, in dem der normale Lane-Target als blockiert gilt. |
-| `escape_clearance` | Abstand des Ausweichzielpunkts zum Rand eines blockierten Bereichs oder freien Intervalls. |
-| `min_free_width_px` | Mindestbreite eines freien Fahrbereichs in Pixeln bezogen auf `planner_image_width_px`. |
-| `planner_image_width_px` | Referenzbreite für pixelbasierte Breitenprüfungen. |
+| Parameter | Default | Bedeutung |
+|---|---|---|
+| `k_steer` | 6.0 | Proportionaler Lenkfaktor. `omega = k_steer * (0.5 - target_x) * 2`, was im Lane-Following `k_steer * lane_error` entspricht — dies **ist** der Lane-P-Gain. Entspricht dem bewährten Challenge-1-Wert. Erhöhen, wenn der Bot zu träge lenkt und Linien überfährt; senken bei Oszillation. |
+| `omega_rotate` | 3.0 | Drehrate beim Drehen auf der Stelle im `ESCAPE_ROTATE`-Zustand. Muss hoch genug sein, um bei `v=0` die Haftreibung zu überwinden — zu niedrig, und der Bot summt nur, dreht sich aber nicht. |
+| `omega_max` | 4.0 | Harte Obergrenze für `|omega|` jeder Ausgabe. 4 = das „sehr abrupte" Ende des nutzbaren Bereichs. |
 
 ---
 
-## Duckie-Filter und Hysterese
+## Grenzen und Sicherheitsabstände
 
-| Parameter | Bedeutung |
-|---|---|
-| `obstacle_image_width_px` | Referenzbreite der YOLO-Bounding-Boxes. |
-| `obstacle_image_height_px` | Referenzhöhe der YOLO-Bounding-Boxes. |
-| `min_duckie_width_px` | Mindestbreite einer Duckie-Box, damit sie berücksichtigt wird. |
-| `min_duckie_height_px` | Mindesthöhe einer Duckie-Box. |
-| `min_duckie_area_px` | Mindestfläche einer Duckie-Box. |
-| `duckie_hold_time` | Zeit, für die ein zuletzt erkanntes Duckie gehalten wird. |
-| `duckie_missed_frames_before_clear` | Anzahl verpasster YOLO-Frames, bevor ein Duckie gelöscht werden darf. |
-| `obstacle_timeout` | Timeout für Hindernisdaten. |
+| Parameter | Default | Bedeutung |
+|---|---|---|
+| `lane_margin` | 0.08 | Harter Abstand zu jeder erkannten Linie. Der befahrbare Korridor ist `[linke_Linie + margin, rechte_Linie - margin]`. Der Lenk-Zielpunkt wird immer in diesen Korridor geklemmt, damit keine Linie überfahren wird. |
+| `duckie_margin_base` | 0.06 | Seitliche Verbreiterung, die jeder Seite einer weit entfernten Duckie-Box hinzugefügt wird. |
+| `duckie_margin_gain` | 0.12 | Zusätzliche Verbreiterung proportional zur Nähe (`ymax`). Eine nahe Ente wird um `base + gain` verbreitert. |
+| `gap_min_width` | 0.16 | Mindestbreite (normiert) einer freien Lücke, damit sie als befahrbar gilt. Darunter dreht sich der Bot statt zu fahren. |
 
 ---
 
-## Lane-Borders und offene Seiten
+## Nähe-Reaktion
 
-| Parameter | Bedeutung |
-|---|---|
-| `lane_margin` | Sicherheitsabstand zu sichtbaren Linien. |
-| `lane_timeout` | Timeout für Lane-Border-Daten. |
-| `default_lane_left` | Fallback linke Grenze, wenn keine gültigen Daten vorhanden sind. |
-| `default_lane_right` | Fallback rechte Grenze. |
-| `open_side_width_bonus` | Bonus für freie Bereiche an einer offenen Seite, wenn eine Linie nicht sichtbar ist. |
+Diese drei Schwellen arbeiten mit der Nähe einer Ente (`ymax`, unten im Bild = näher) und
+sollten geordnet bleiben: `react_ymax < front_slow_ymax < front_block_ymax`.
 
----
-
-## Ausweichregler
-
-| Parameter | Bedeutung |
-|---|---|
-| `avoidance_vel` | Vorwärtsgeschwindigkeit während aktiver Ausweichfahrt. |
-| `avoidance_steering_gain` | Verstärkung des Ausweichfehlers. |
-| `avoidance_kp` | P-Anteil des Ausweich-PID. |
-| `avoidance_ki` | I-Anteil des Ausweich-PID. |
-| `avoidance_kd` | D-Anteil des Ausweich-PID. |
-| `max_omega` | Maximale Winkelgeschwindigkeit, die der Controller ausgeben darf. |
-| `min_vel` | Untere Grenze für Vorwärtsgeschwindigkeit, wenn ein Velocity-Override genutzt wird. |
+| Parameter | Default | Bedeutung |
+|---|---|---|
+| `react_ymax` | 0.62 | Nähe, die eine Ente erreichen muss, damit sie überhaupt zählt — erst dann erzeugt sie ihr blockiertes Intervall (rote Box) und kann ein Ausweichen auslösen. **HÖHER = reagiert näher/später, NIEDRIGER = reagiert weiter/früher.** Dies ist der Regler gegen „reagiert zu früh". |
+| `front_slow_ymax` | 0.72 | `ymax` der nächsten Ente direkt voraus, ab dem die Geschwindigkeit Richtung `v_min` heruntergeregelt wird. Über `react_ymax` halten. |
+| `front_block_ymax` | 0.88 | `ymax`, ab dem die Front als blockiert gilt (kein Weg nach vorn) → Wechsel in `ESCAPE_ROTATE`. |
 
 ---
 
-## Ausweichseite und Zielglättung
+## Recovery / Anti-Freeze
 
-| Parameter | Bedeutung |
-|---|---|
-| `avoidance_side_lock_time` | Zeit, in der die zuletzt gewählte Ausweichseite bevorzugt wird. |
-| `avoidance_side_lock_bonus` | Score-Bonus für die zuletzt gewählte Ausweichseite. |
-| `avoidance_target_smoothing_alpha` | Glättung des Ausweichzielpunkts. Höher = direktere Reaktion, niedriger = ruhiger. |
-| `gap_width_bonus_weight` | Gewichtung der Intervallbreite bei der Auswahl des Ausweichbereichs. |
-| `narrow_gap_behavior` | Verhalten, wenn kein ausreichend breiter Bereich gefunden wird. |
-
----
-
-## Drehen auf der Stelle beim Ausweichen
-
-| Parameter | Bedeutung |
-|---|---|
-| `avoidance_turn_in_place_error_enter` | Ab dieser Target-Abweichung dreht der Bot auf der Stelle statt vorwärts zu fahren. |
-| `avoidance_turn_in_place_error_exit` | Unter dieser Abweichung verlässt der Bot den Turn-in-Place-Zustand. |
-| `avoidance_turn_in_place_omega` | Winkelgeschwindigkeit beim Turn-in-Place-Ausweichen. |
+| Parameter | Default | Bedeutung |
+|---|---|---|
+| `escape_min_dwell` | 0.25 | Mindestzeit im `ESCAPE_ROTATE`, bevor er wieder verlassen werden darf (verhindert Zittern zwischen Drehen und Fahren). **Wichtig:** `escape_min_dwell * omega_rotate` ist der Mindest-Drehwinkel, bevor der Zustand neu bewertet werden darf. Bei 0.25 × 1.5 sind das ~21°. Deutlich größere Werte drehen die Fahrbahnlinien aus dem Kamerabild, bevor der Zustand überhaupt neu geprüft wird — genau so fährt der Bot blind über die Markierung. |
+| `escape_relax_after` | 2.0 | Nach dieser Drehzeit ohne befahrbare Lücke werden `gap_min_width` und die Duckie-Verbreiterung schrittweise verkleinert, bis sich eine Lücke öffnet (Garantie gegen dauerhaftes Feststecken). **Achtung:** In einer echten Sackgasse heißt das, dass die Sicherheitsabstände so lange schrumpfen, bis eine zu enge Lücke als befahrbar gilt. Ein echtes Rückwärts-Manöver (`ESCAPE_REVERSE`) fehlt noch. |
+| `front_slice_half` | 0.04 | Halbe Breite des Front-Streifens („ist etwas in meinem Weg?") **um die tatsächlich angesteuerte Spalte**. Entspricht der **Roboterbreite**, nicht einer Komfortzone. **Harte Bedingung: kleiner als `gap_min_width/2`.** Ist er breiter, liegen genau die beiden Enten, die die Lücke bilden, im Streifen, während der Bot zwischen ihnen hindurchfährt — `front_block` löst an den eigenen Lückenrändern aus und das Manöver bricht nach ein bis zwei Frames ab. Der Node warnt beim Start, wenn die Bedingung verletzt ist. |
+| `avoid_min_dwell` | 0.8 | Sekunden, die `AVOID` gehalten wird, nachdem es auf einer befahrbaren Lücke gestartet ist — auch wenn die Lücke kurzzeitig zu schmal misst. Das ist der Knopf für „fahr da beherzt durch". Die Duckie-Verbreiterung wächst mit der Nähe, eine auf Distanz akzeptierte Lücke wird beim Heranfahren also **zwangsläufig** schmaler; ohne Dwell bricht das Manöver konstruktionsbedingt auf halbem Weg ab. Eine wirklich nahe Ente (`front_block_ymax`) bricht weiterhin sofort ab. |
+| `lane_hold_frames` | 12 | Aufeinanderfolgende ungültige Lane-Border-Messungen, bevor diese Seite als offen gilt und der Korridor sich dort öffnet. Das ist das **Linien-Gedächtnis**: solange die Serie darunter liegt, bleibt die zuletzt bekannte Linienposition eine harte Grenze. Zu klein → ein kurzer Sichtverlust (z. B. während einer Drehung) hebt die Grenze auf und der Bot fährt über die Markierung. Einheit sind **Frames, nicht Sekunden** — die Wanduhr-Zeit hängt von der Publish-Rate von `detect_lane_node` ab (`rostopic hz /$VEHICLE_NAME/detect/lane_borders`). |
+| `duckie_hold_time` | 1.0 | Sekunden, für die eine Duckie-Box nach Detektionsausfall gehalten wird (Blindflug). Höhere Werte verhindern, dass eine Drehung die Ente vergisst, die den Escape ausgelöst hat. Aber: die Box wird in **Bild-x** gespeichert, sitzt nach einer Drehung also am falschen Ort. Über ~1.5 sind Phantom-Hindernisse zu erwarten. |
 
 ---
 
-## Post-Avoidance
+## Fest verdrahtete Konstanten (nicht als Parameter)
 
-| Parameter | Bedeutung |
-|---|---|
-| `avoidance_clear_hold_time` | Zeit, für die der letzte Ausweichzielpunkt nach Verschwinden des Duckies gehalten wird. |
-| `lane_reentry_blend_time` | Dauer der weichen Rückführung vom Ausweichziel zum Lane-Target. |
-| `reentry_vel` | Geschwindigkeit während der Rückführung in die Spur. |
+Diese sind aus der Kamerageometrie bzw. der Bildrate abgeleitet und stehen oben im Node:
 
----
+```text
+PLAN_Y_MAX = 1.0       # unterer Rand des Planungsbands (oberer Rand = react_ymax)
+LANE_TIMEOUT = 1.0     # s, bevor Lane-Border-Daten als veraltet gelten
+MIN_ESCAPE_OMEGA = 0.8 # untere Schranke für omega_rotate (Haftreibung), siehe unten
+GAP_STICKY_BONUS = 0.06 # Breiten-Bonus für die Lücke, in die schon gefahren wird
+HYSTERESIS_MARGIN = 0.10 # Schwelle gegen Links/Rechts-Flackern
+GAP_INSET = 0.04       # Abstand des Zielpunkts zu den Rändern der gewählten Lücke
+CLEAR_HOLD_TIME = 0.6  # s freie Fahrbahn, bevor AVOID zurück zu CRUISE fällt
+MIN_DUCKIE_WIDTH/HEIGHT = 0.04  # YOLO-Rauschfilter
+```
 
-## Blocked-Recovery
-
-| Parameter | Bedeutung |
-|---|---|
-| `blocked_recovery_delay` | Wartezeit, bevor der Recovery-Scan startet. |
-| `blocked_recovery_omega` | Winkelgeschwindigkeit während des Recovery-Scans. |
-| `blocked_recovery_min_turn_time` | Mindestdauer des Recovery-Scans. |
-| `blocked_recovery_min_angle_deg` | Mindest-Scanwinkel, aus dem eine Mindest-Scanzeit berechnet wird. |
-| `blocked_recovery_max_angle_deg` | Maximaler Scanwinkel, aus dem eine maximale Scanzeit berechnet wird. |
+`omega_rotate` wird im Konstruktor auf `MIN_ESCAPE_OMEGA` nach unten begrenzt. Damit
+benutzt der Never-Freeze-Guard direkt `omega_rotate`, statt wie früher eine eigene
+fest verdrahtete Untergrenze (2.0) zu führen, die einem bewusst niedriger
+eingestellten `omega_rotate` widersprochen hat.
 
 ---
 

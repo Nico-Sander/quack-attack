@@ -56,11 +56,16 @@ class DetectLaneNode:
         # Setup ROS Topics
         base_topic = f"/{self._vehicle_name}"
 
+        # See the long note in detect_obstacle_node: queue_size=1 alone does not
+        # drop stale frames, because rospy's default 64 KB transport buffer holds
+        # only about one compressed image and the backlog accumulates in the socket.
+        # The is_running guard below bounds CPU but not latency on its own.
         self.sub_image_original = rospy.Subscriber(
-            f"{base_topic}/camera_node/image/compressed", 
-            CompressedImage, 
-            self.cbFindLane, 
-            queue_size=1
+            f"{base_topic}/camera_node/image/compressed",
+            CompressedImage,
+            self.cbFindLane,
+            queue_size=1,
+            buff_size=2 ** 24
         )
         self.sub_obstacles = rospy.Subscriber(
             f"{base_topic}/detect/duckie_BB",
@@ -89,7 +94,7 @@ class DetectLaneNode:
             f"{base_topic}/debug/lane_yellow", CompressedImage, queue_size=1
         )
 
-        rospy.loginfo(f"[{node_name}] Ready and listening to {base_topic}/camera_nod/image/compressed")
+        rospy.loginfo(f"[{node_name}] Ready and listening to {base_topic}/camera_node/image/compressed")
 
     def _init_model(self):
         """Loads and optimizes the U-Net model for inference."""
@@ -212,11 +217,13 @@ class DetectLaneNode:
         return fallback_value, False
 
     def cbFindLane(self, image_msg):
-        """Processes incoming camera frames to calculate lane error."""
+        """Drop frames that arrive while segmentation is still running.
 
-        # Start inference timer
-        start_time = rospy.Time().now().to_sec()
-
+        The reset lives in a finally: previously it was assigned at each exit path,
+        so any exception raised mid-inference left is_running stuck True and the node
+        stopped publishing lane data permanently - silently, with no error after the
+        first traceback.
+        """
         # Throttle processing if needed
         if self.counter <= 1:
             self.counter += 1
@@ -227,13 +234,22 @@ class DetectLaneNode:
 
         self.is_running = True
         self.counter = 0
+        try:
+            self._find_lane(image_msg)
+        finally:
+            self.is_running = False
+
+    def _find_lane(self, image_msg):
+        """Processes incoming camera frames to calculate lane error."""
+
+        # Start inference timer
+        start_time = rospy.Time().now().to_sec()
 
         # Decode Image
         np_arr = np.frombuffer(image_msg.data, np.uint8)
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
         if cv_image is None:
-            self.is_running = False
             return
 
         # 1. Preprocessing
@@ -280,18 +296,26 @@ class DetectLaneNode:
             fallback_value=self.yellow_fallback
         )
 
-        # Sanity check for crossed lines
+        # Crossed lines (white at or left of yellow).
+        #
+        # If only one colour was actually detected, the other's position is just the
+        # fallback and the ordering says nothing - substitute the fallback as before.
+        #
+        # If BOTH were detected, the ordering is real: the bot is skewed across the
+        # lane, or on the return leg of the U-turn. That inverts the derived lane
+        # error (handled via the `valid` flag below) but it does not make either
+        # measurement wrong. This used to discard one of them based on a threshold
+        # heuristic, which destroyed a usable corridor in precisely the pose where the
+        # controller needs it - and the controller already treats the two positions
+        # order-agnostically, so it can consume this directly.
+        lines_crossed = False
         if center_white <= center_yellow:
             if white_valid and not yellow_valid:
                 center_yellow = self.yellow_fallback
             elif yellow_valid and not white_valid:
                 center_white = self.white_fallback
-            elif center_white > int(self._target_im_size * 0.4):
-                center_yellow = self.yellow_fallback
-                yellow_valid = False
-            else:
-                center_white = self.white_fallback
-                white_valid = False
+            elif white_valid and yellow_valid:
+                lines_crossed = True
 
         lane_center = (center_white + center_yellow) / 2.0
 
@@ -309,6 +333,9 @@ class DetectLaneNode:
             "lane_center_x": float(lane_center / self._target_im_size),
             "yellow_valid": bool(yellow_valid),
             "white_valid": bool(white_valid),
+            # "was this line seen" is per-colour and above; "valid" is narrower - it
+            # gates the lane_center/error signal only, which is inverted when crossed.
+            "lines_crossed": bool(lines_crossed),
             "valid": bool(center_white > center_yellow and (yellow_valid or white_valid))
         })
 
@@ -348,10 +375,10 @@ class DetectLaneNode:
             pass # Ignore if X11 forwarding isn't setup in the Docker container
         '''
         
+        # Throttled: this fired on every frame, so at camera rate it was itself a
+        # measurable load and drowned every other message in the pane.
         end_time = rospy.Time().now().to_sec()
-        rospy.loginfo(f"Inf Time: {end_time - start_time}")
-
-        self.is_running = False
+        rospy.loginfo_throttle(2.0, f"Inf Time: {end_time - start_time:.3f}s")
 
     def run_debug(self):
         """Loops continuously to publish debug visualizers if requested."""

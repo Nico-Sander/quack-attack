@@ -24,6 +24,12 @@ class DetectObstacleNode:
         self.frame_counter = 0
         self.model = None
         self.classes = []
+        # Reentrancy guard, mirroring detect_lane_node. Without it a burst of queued
+        # frames is each run through full YOLO inference, so the node can never catch
+        # up once it falls behind. Dropping a frame is always better than acting on a
+        # stale one - the map fuses detections at the CURRENT pose.
+        self.is_running = False
+        self.dropped_frames = 0
 
         self.load_config()
         self.load_model()
@@ -38,11 +44,24 @@ class DetectObstacleNode:
 
         base_topic = f"/{self.vehicle_name}"
 
+        # buff_size is NOT optional here, and a large value is what fixes latency.
+        #
+        # rospy's default transport buffer is 64 KB - about one compressed frame.
+        # queue_size=1 only discards messages AFTER they come off the transport, so
+        # it cannot drop bytes already sitting in the TCP receive buffer. Once
+        # inference is even marginally slower than the camera (33.3 ms at 30 Hz), the
+        # socket backlog grows monotonically and every frame handed to the callback
+        # is older than the last - drifting seconds behind after a few minutes.
+        #
+        # With a large buffer rospy pulls the whole backlog in one read and
+        # queue_size=1 keeps only the newest frame, so stale frames are dropped
+        # instead of processed, and latency plateaus at roughly one inference.
         self.sub_image = rospy.Subscriber(
             f"{base_topic}/camera_node/image/compressed",
             CompressedImage,
             self.cb_process_image,
-            queue_size=1
+            queue_size=1,
+            buff_size=2 ** 24
         )
 
         self.sub_lane_borders = rospy.Subscriber(
@@ -183,6 +202,28 @@ class DetectObstacleNode:
         return self.x_min, self.x_max, self.y_min, False
 
     def cb_process_image(self, image_msg):
+        """Thin wrapper: drop frames that arrive while inference is still running.
+
+        try/finally rather than a flag set at each exit, because the worker below
+        has several early returns and one missed reset would wedge the node
+        permanently - it would silently stop detecting, with no error anywhere.
+        """
+        if self.is_running:
+            self.dropped_frames += 1
+            rospy.logwarn_throttle(
+                10.0,
+                f"[{self.node_name}] inference slower than the camera; dropped "
+                f"{self.dropped_frames} frames so far. This keeps latency bounded. "
+                f"Raise process_every_n_frames if it is dropping most of them.",
+            )
+            return
+        self.is_running = True
+        try:
+            self._process_image(image_msg)
+        finally:
+            self.is_running = False
+
+    def _process_image(self, image_msg):
         self.frame_counter += 1
         if self.process_every_n_frames > 1:
             if self.frame_counter % self.process_every_n_frames != 0:

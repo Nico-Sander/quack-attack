@@ -11,16 +11,18 @@ Das Package kombiniert drei Aufgaben:
 Die zentrale Idee ist bewusst einfach gehalten:
 
 ```text
-Normalfall:
-    /detect/lane -> PID-Regler -> car_cmd
+Normalfall (CRUISE):
+    /detect/lane -> P-Lenkung -> car_cmd
 
-Duckie blockiert den normalen Fahrweg:
-    Duckie-Bounding-Boxen + Spurgrenzen -> freie Fahrbereiche
-    -> sicheres Ziel links/rechts neben dem Duckie
-    -> langsamer und kontrollierter ausweichen
+Duckie blockiert den Fahrweg (AVOID):
+    Duckie-Bounding-Boxen + Spurgrenzen -> freie Lücken
+    -> Ziel in die beste Lücke, langsamer vorbei
+
+Kein Weg nach vorn (ESCAPE_ROTATE):
+    auf der Stelle drehen, bis sich eine Lücke zeigt (nie anhalten)
 ```
 
-Der wichtigste Node ist `control_lane_node.py`. Er übernimmt das bewährte Lane-Following aus Challenge 1 als Basis und aktiviert die Ausweichlogik nur bei relevanten Duckies.
+Der wichtigste Node ist `control_lane_node.py`. Er nutzt Lane-Following als Route und weicht Duckies mit einem „follow-the-gap"-Regler aus, der konstruktionsbedingt nie einfriert.
 
 ---
 
@@ -29,7 +31,7 @@ Der wichtigste Node ist `control_lane_node.py`. Er übernimmt das bewährte Lane
 ```text
 obstacle_detection/
 ├── config/
-│   ├── control_lane_node.json        # Parameter für Regler, Ausweichlogik und Recovery
+│   ├── control_lane_node.json        # 14 Parameter für Regler, Ausweichen und Recovery
 │   └── detect_obstacle_node.json     # Parameter für YOLO-Duckie-Erkennung
 ├── docs/
 │   ├── CONTROL_LANE_NODE.md          # Detailbeschreibung der Fahrlogik
@@ -90,33 +92,22 @@ Details: [`docs/TOPICS.md`](docs/TOPICS.md)
 
 ### `control_lane_node.py`
 
-Dieser Node entscheidet, wie der Duckiebot fährt.
+Dieser Node entscheidet, wie der Duckiebot fährt. Er ist als „follow-the-gap"-Regler mit
+einer kleinen Zustandsmaschine (CRUISE / AVOID / ESCAPE_ROTATE) aufgebaut. Leitprinzip:
+**genau eine Stelle** schreibt den Fahrbefehl und erzwingt die Invariante „nie `v==0 UND
+omega==0`". Ohne Weg nach vorn dreht sich der Bot, um eine Lücke zu suchen, statt anzuhalten.
 
-Die Logik besteht aus mehreren Blöcken:
+Kurzüberblick:
 
-1. **Normales Lane-Following**  
-   Wenn kein relevantes Duckie den Fahrweg blockiert, wird direkt der Lane-Error aus `/detect/lane` geregelt.
+1. **Korridor** aus den (entprellten) Linienpositionen; sichtbare Linien sind harte Grenzen,
+   der Zielpunkt wird immer hineingeklemmt.
+2. **Blockierte/freie Intervalle** aus den nähe-abhängig verbreiterten Duckie-Boxen; die
+   breiteste freie Lücke wird gewählt.
+3. **Zustandsmaschine**: freie Fahrbahn → `CRUISE` (Lane-Following); Ente im Weg → `AVOID`
+   (langsamer, um sie herumlenken); kein Weg nach vorn → `ESCAPE_ROTATE` (auf der Stelle
+   drehen, bis sich eine Lücke zeigt, mit schrittweiser Lockerung als Anti-Freeze-Garantie).
 
-2. **Fahrbereich bestimmen**  
-   Sichtbare gelbe und weiße Linien werden als harte Grenzen verwendet. Wenn eine Linie nicht sichtbar ist, wird diese Seite als offen behandelt.
-
-3. **Duckies filtern**  
-   Sehr kleine oder zu weit entfernte Duckies werden ignoriert. Duckies werden außerdem für kurze Zeit gehalten, damit einzelne YOLO-Aussetzer nicht sofort zu flackernden Sperrbereichen führen.
-
-4. **Sperrbereiche und freie Bereiche berechnen**  
-   Die Bounding-Boxes relevanter Duckies werden mit Sicherheitsmargen horizontal als blockierte Intervalle in den Fahrbereich gelegt. Daraus entstehen freie Intervalle.
-
-5. **Ausweichziel wählen**  
-   Der Node fährt nicht blind zur breitesten Lücke. Er prüft zuerst, ob der normale Lane-Target-Bereich blockiert ist. Nur dann wird ein Ausweichziel links oder rechts neben dem Duckie gewählt.
-
-6. **Starkes Ausweichen auf der Stelle**  
-   Wenn das Ausweichziel sehr weit links oder rechts liegt, fährt der Bot nicht sofort vorwärts. Er dreht zuerst auf der Stelle in Richtung Ziel, bis der Fehler kleiner wird.
-
-7. **Post-Avoidance**  
-   Wenn das Duckie aus dem Sichtfeld verschwindet, wird nicht abrupt zurück zur Spurmitte geregelt. Der letzte Ausweichkurs wird kurz gehalten und dann sanft wieder in Lane-Following überführt.
-
-8. **Blocked-Recovery**  
-   Wenn kein gültiger Fahrbereich gefunden wird, wartet der Bot kurz und scannt dann langsam durch Drehen. Dabei merkt sich der Node den besten gefundenen Zielbereich und fährt danach weiter.
+Die Entscheidungslogik (`GapPlanner`) ist `rospy`-frei und ohne ROS testbar.
 
 Details: [`docs/CONTROL_LANE_NODE.md`](docs/CONTROL_LANE_NODE.md)
 

@@ -1,7 +1,34 @@
 #!/usr/bin/env python3
 
+"""Follow-the-gap driving controller for the duckie U-turn course.
+
+Design (see docs/CONTROL_LANE_NODE.md):
+
+The robot follows the lane as its nominal route and steers around duckies using a
+"follow the gap" scheme. A tiny three-state machine (CRUISE / AVOID / ESCAPE_ROTATE)
+owns every transition, and a single output guard is the ONLY place that writes the
+motor command. That guard enforces one invariant that structurally kills the old
+"freeze in front of a duckie" bug:
+
+This is the lean variant: purely reactive, camera and time only. The odometry-backed
+obstacle memory / mapping layer and its dead-end ESCAPE_REVERSE recovery have been
+removed rather than left switched off, so there is no dormant code path and no
+parameter here that does nothing.
+
+    the robot is NEVER commanded (v == 0 and omega == 0)
+
+If there is no forward path, the robot rotates in place to look for a gap instead of
+stopping. If it rotates for too long without finding one, it progressively relaxes its
+gap/clearance requirements until something opens up. So it can always make progress.
+
+Conventions (normalized image coordinates, all in [0, 1]):
+    x: 0 = left image edge, 1 = right image edge
+    duckie ymax: larger = closer to the robot (bottom of frame)
+    lane error (/detect/lane): positive => lane center is to the LEFT
+    omega (output): positive => turn LEFT
+"""
+
 import json
-import math
 import os
 
 import rospy
@@ -9,1205 +36,678 @@ from std_msgs.msg import Float64, String
 from duckietown_msgs.msg import Twist2DStamped
 
 
-class ControlLaneNode:
-    """Lane controller with gated obstacle avoidance.
+# --- Hardcoded geometry / debounce constants (not worth exposing as tunables) ---
+# The top of the planning band is the tunable `react_ymax`; PLAN_Y_MAX is the bottom.
+PLAN_Y_MAX = 1.0           # bottom of the vertical band where duckies matter
+LANE_TIMEOUT = 1.0         # s before lane-border data is considered stale
+# Floor for the in-place rotation rate. Below roughly this the motors buzz without
+# breaking static friction, so a lower tuned value would violate never-freeze in
+# practice while looking fine in the command.
+MIN_ESCAPE_OMEGA = 0.8
+HYSTERESIS_MARGIN = 0.10   # other side must beat current by this to switch avoid side
+GAP_INSET = 0.04           # keep the target this far inside the chosen gap's edges
+GAP_STICKY_BONUS = 0.06    # width bonus for the gap we are already driving into
+CLEAR_HOLD_TIME = 0.6      # s the road must stay clear before AVOID falls back to CRUISE
+EPS = 1e-3
 
-    Outside of a relevant duckie situation this node uses the same PID structure as
-    the Challenge 1 lane controller. Obstacle avoidance is only activated when a
-    sufficiently large duckie blocks the normal lane target inside the planning
-    band.
+# Minimum duckie box size (normalized) to reject YOLO noise / far specks.
+MIN_DUCKIE_WIDTH = 0.04
+MIN_DUCKIE_HEIGHT = 0.04
+
+# States
+CRUISE = "CRUISE"
+AVOID = "AVOID"
+ESCAPE_ROTATE = "ESCAPE_ROTATE"
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def clamp01(value):
+    return clamp(float(value), 0.0, 1.0)
+
+
+class GapPlanner:
+    """Pure decision core: turns cached sensor signals into (v, omega, debug).
+
+    Kept free of rospy so it can be exercised by an off-board test harness. All time
+    comes in as an explicit ``now`` argument; all sensor state comes in via the
+    ``update_*`` setters. ``step(now)`` returns the command and a debug dict.
     """
 
+    def __init__(self, params):
+        p = params
+        self.v_cruise = p["v_cruise"]
+        self.v_avoid = p["v_avoid"]
+        self.v_min = p["v_min"]
+        self.k_steer = p["k_steer"]
+        # Clamped so the never-freeze guard can use this value directly instead of
+        # carrying its own hardcoded floor (the two used to disagree).
+        self.omega_rotate = max(p["omega_rotate"], MIN_ESCAPE_OMEGA)
+        self.omega_max = p["omega_max"]
+        self.lane_margin = p["lane_margin"]
+        self.duckie_margin_base = p["duckie_margin_base"]
+        self.duckie_margin_gain = p["duckie_margin_gain"]
+        self.gap_min_width = p["gap_min_width"]
+        self.front_slice_half = p["front_slice_half"]
+        self.react_ymax = p["react_ymax"]
+        self.front_slow_ymax = p["front_slow_ymax"]
+        self.front_block_ymax = p["front_block_ymax"]
+        self.escape_min_dwell = p["escape_min_dwell"]
+        self.avoid_min_dwell = p["avoid_min_dwell"]
+        self.escape_relax_after = p["escape_relax_after"]
+        self.lane_hold_frames = p["lane_hold_frames"]
+        self.duckie_hold_time = p["duckie_hold_time"]
+
+        # Lane-border state.
+        self.left_wall = 0.05        # last-known left wall x (order-agnostic)
+        self.right_wall = 0.95       # last-known right wall x
+        self.left_open = False       # True => no line on the left, corridor opens to 0
+        self.right_open = False
+        self.left_invalid_streak = 0
+        self.right_invalid_streak = 0
+        self.last_lane_time = 0.0
+
+        # Duckie state.
+        self.duckies = []            # list of dicts with xmin,xmax,ymax
+        self.last_duckie_time = 0.0
+        self.raw_duckie_count = 0
+        self.small_duckie_count = 0
+
+        # Lane error (route). `lane_error_trusted` is separate from line visibility:
+        # when the lane node reports the two lines in crossed order (the bot is skewed,
+        # or on the return leg), the derived error signal is inverted and unusable - but
+        # both lines were still SEEN, so the corridor they define is still valid.
+        self.lane_error = 0.0
+        self.lane_error_trusted = True
+
+        # FSM state.
+        self.state = CRUISE
+        self.state_since = 0.0
+        self.escape_dir = 1.0        # +1 => rotate left; latched during a dwell
+        self.avoid_side = 0.0        # sign of last avoid steer (for hysteresis)
+        self.clear_since = None      # when the road first became clear (for CLEAR_HOLD)
+        self.last_target_x = 0.5
+
+    # ---- sensor setters -----------------------------------------------------
+    def update_lane_error(self, error):
+        self.lane_error = clamp(float(error), -1.0, 1.0)
+
+    def set_lane_error_trusted(self, trusted):
+        self.lane_error_trusted = bool(trusted)
+
+    def update_lane_borders(self, now, yellow_x, white_x, yellow_valid, white_valid):
+        """Fold one lane-border message into debounced wall state.
+
+        The lane node always reports yellow as the left column and white as the right,
+        so we treat them order-agnostically as two wall candidates and never attach
+        left/right *semantics* to the colors (matters on the return leg of the U-turn).
+        """
+        a = clamp01(yellow_x)
+        b = clamp01(white_x)
+        left_x, right_x = (a, b) if a <= b else (b, a)
+        # yellow<->wall association follows the ordering swap too.
+        left_valid, right_valid = (yellow_valid, white_valid) if a <= b else (white_valid, yellow_valid)
+
+        # Debounce: only open a side after lane_hold_frames consecutive invalid frames.
+        if left_valid:
+            self.left_invalid_streak = 0
+            self.left_wall = left_x
+        else:
+            self.left_invalid_streak += 1
+        if right_valid:
+            self.right_invalid_streak = 0
+            self.right_wall = right_x
+        else:
+            self.right_invalid_streak += 1
+
+        self.left_open = self.left_invalid_streak > self.lane_hold_frames
+        self.right_open = self.right_invalid_streak > self.lane_hold_frames
+        self.last_lane_time = now
+
+    def update_duckies(self, now, duckies_raw):
+        """Filter YOLO detections to real, big-enough duckie spans."""
+        self.raw_duckie_count = len(duckies_raw)
+        filtered = []
+        small = 0
+        for d in duckies_raw:
+            if str(d.get("class_name", "duckie")).lower() != "duckie":
+                continue
+            xmin = clamp01(d.get("xmin", d.get("x_center", 0.5) - d.get("width", 0.0) / 2.0))
+            xmax = clamp01(d.get("xmax", d.get("x_center", 0.5) + d.get("width", 0.0) / 2.0))
+            ymin = clamp01(d.get("ymin", d.get("y_center", 0.5) - d.get("height", 0.0) / 2.0))
+            ymax = clamp01(d.get("ymax", d.get("y_center", 0.5) + d.get("height", 0.0) / 2.0))
+            if (xmax - xmin) < MIN_DUCKIE_WIDTH or (ymax - ymin) < MIN_DUCKIE_HEIGHT:
+                small += 1
+                continue
+            filtered.append({"xmin": xmin, "xmax": xmax, "ymax": ymax})
+        self.small_duckie_count = small
+        if filtered:
+            self.duckies = filtered
+            self.last_duckie_time = now
+
+    # ---- derived signals ----------------------------------------------------
+    def lane_fresh(self, now):
+        return (now - self.last_lane_time) < LANE_TIMEOUT
+
+    def corridor(self, now):
+        """Return (L, R, left_open, right_open): the hard steerable bounds."""
+        if not self.lane_fresh(now):
+            # No recent lane data: treat both sides as open unknown geometry.
+            return 0.0, 1.0, True, True
+        left = 0.0 if self.left_open else clamp01(self.left_wall + self.lane_margin)
+        right = 1.0 if self.right_open else clamp01(self.right_wall - self.lane_margin)
+        if right - left < 2 * EPS:
+            # Degenerate corridor (walls crossed / too tight): open it up so we can move.
+            return 0.0, 1.0, True, True
+        return left, right, self.left_open, self.right_open
+
+    def active_duckies(self, now):
+        """Duckies close enough to matter (hold window + react_ymax gate).
+
+        A duckie only starts creating a blocked interval / triggering avoidance once
+        its ymax (closeness) crosses react_ymax. Raise react_ymax to react closer/later,
+        lower it to react farther/earlier.
+        """
+        if (now - self.last_duckie_time) > self.duckie_hold_time:
+            return []
+        return [d for d in self.duckies if d["ymax"] >= self.react_ymax]
+
+    def blocked_spans(self, now, left, right, relax=1.0):
+        """Inflated, corridor-clipped horizontal spans for each active duckie.
+
+        ``relax`` (<=1.0) shrinks the safety inflation while stuck in ESCAPE so a
+        marginal gap can eventually open (paired with the gap-width relaxation).
+        """
+        spans = []
+        for d in self.active_duckies(now):
+            proximity = clamp01(d["ymax"])
+            inflate = (self.duckie_margin_base + self.duckie_margin_gain * proximity) * relax
+            lo = max(left, d["xmin"] - inflate)
+            hi = min(right, d["xmax"] + inflate)
+            if hi > lo:
+                spans.append((lo, hi))
+        spans.sort()
+        merged = []
+        for lo, hi in spans:
+            if merged and lo <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+            else:
+                merged.append((lo, hi))
+        return merged
+
+    @staticmethod
+    def free_intervals(left, right, spans):
+        free = []
+        cursor = left
+        for lo, hi in spans:
+            if lo > cursor:
+                free.append((cursor, lo))
+            cursor = max(cursor, hi)
+        if cursor < right:
+            free.append((cursor, right))
+        return free
+
+    def front_ymax(self, now, probe_x):
+        """Closeness of the nearest duckie whose span overlaps the front slice.
+
+        The slice represents the robot's own width around the column it is driving
+        toward - "is something in my path", not "is something near me". It must stay
+        narrower than half the minimum gap (see front_slice_half), or the duckies
+        forming a gap's edges register as being ahead while we drive between them and
+        the manoeuvre aborts on its own walls.
+        """
+        lo = probe_x - self.front_slice_half
+        hi = probe_x + self.front_slice_half
+        worst = 0.0
+        for d in self.active_duckies(now):
+            if d["xmax"] >= lo and d["xmin"] <= hi:
+                worst = max(worst, d["ymax"])
+        return worst
+
+    def lane_target_x(self):
+        # error positive => center left => small target_x.
+        return clamp01((1.0 - self.lane_error) / 2.0)
+
+    # ---- main step ----------------------------------------------------------
+    def step(self, now):
+        left, right, left_open, right_open = self.corridor(now)
+        # "Unknown geometry": no trustworthy corridor to follow (both sides open,
+        # whether from debounced line loss or stale data). Not the same as a stale
+        # topic - invalid-but-arriving frames still land here.
+        lines_valid = self.lane_fresh(now) and not (left_open and right_open)
+        unknown_geometry = not lines_valid
+
+        # Goal column: follow the lane when we trust the error signal, else bias into
+        # the U-turn (left). Note this is gated on lane_error_trusted SEPARATELY from
+        # the corridor: with the lines detected but in crossed order we fall back to
+        # the heading bias for the goal, while still honouring the corridor below.
+        if lines_valid and self.lane_error_trusted:
+            goal_x = clamp(self.lane_target_x(), left, right)
+        else:
+            goal_x = self.heading_bias(left, right)
+
+        # Escape relaxation: after rotating a while with no gap, progressively shrink
+        # both the required gap width and the duckie inflation so a marginal gap opens.
+        relax = 1.0
+        if self.state == ESCAPE_ROTATE:
+            stuck_for = now - self.state_since
+            if stuck_for > self.escape_relax_after:
+                over = stuck_for - self.escape_relax_after
+                relax = max(0.25, 1.0 - 0.25 * over)  # decays; floor keeps a tiny gap usable
+
+        spans = self.blocked_spans(now, left, right, relax)
+        frees = self.free_intervals(left, right, spans)
+        gap_min = self.gap_min_width * relax
+
+        best_gap = self.pick_gap(frees, goal_x)
+        best_width = (best_gap[1] - best_gap[0]) if best_gap else 0.0
+        passable = best_gap is not None and best_width >= gap_min
+
+        # Column we would actually steer toward. The front clearance checks below MUST
+        # be measured here and not at goal_x: goal_x is the nominal route (lane centre
+        # / U-turn bias), which by definition still points at the duckie we are trying
+        # to drive around. Measuring there means steering into a gap never clears the
+        # front check, so the bot re-enters ESCAPE_ROTATE a frame or two after
+        # committing - drive a centimetre, rotate, repeat.
+        drive_x = self.gap_target(best_gap, goal_x)
+        front = self.front_ymax(now, drive_x)
+
+        goal_blocked = self.column_blocked(goal_x, spans)
+        front_slow = front >= self.front_slow_ymax
+        front_block = front >= self.front_block_ymax
+
+        # Commitment: once AVOID has started on a passable gap, hold it for
+        # avoid_min_dwell even if the gap momentarily measures too narrow. Duckie
+        # inflation grows with proximity, so a gap accepted at range always narrows as
+        # we approach it - without this the manoeuvre aborts halfway through by
+        # construction. front_block is deliberately NOT suppressed: something genuinely
+        # close ahead still wins immediately.
+        committed = (self.state == AVOID
+                     and (now - self.state_since) < self.avoid_min_dwell)
+
+        blocked_front = front_block or (not passable and not committed)
+        want_avoid = goal_blocked or front_slow or unknown_geometry
+
+        # --- transitions (single owner) --------------------------------------
+        if self.state == ESCAPE_ROTATE and not self.can_exit_escape(now):
+            # Latched: rotate at least escape_min_dwell before reconsidering.
+            self.clear_since = None
+        elif blocked_front:
+            self.enter_escape(now, left, right, frees)
+            self.clear_since = None
+        elif want_avoid:
+            self.enter(AVOID, now)
+            self.clear_since = None
+        else:
+            # Road ahead is clear. Fall back to CRUISE only after a short clear hold,
+            # so a one-frame "all clear" glimpse mid-maneuver doesn't snap us back.
+            if self.clear_since is None:
+                self.clear_since = now
+            if self.state != CRUISE and (now - self.clear_since) >= CLEAR_HOLD_TIME:
+                self.enter(CRUISE, now)
+            elif self.state == ESCAPE_ROTATE:
+                # Cleared during escape but within the hold window: start moving via AVOID
+                # rather than continuing to rotate in place.
+                self.enter(AVOID, now)
+
+        # --- outputs per state -----------------------------------------------
+        if self.state == ESCAPE_ROTATE:
+            v = 0.0
+            omega = self.escape_dir * self.omega_rotate
+            target_x = goal_x
+            reason = "escape_rotate_relaxed" if relax < 1.0 else "escape_rotate_no_gap"
+        elif self.state == AVOID:
+            target_x = self.avoid_target(best_gap, goal_x)
+            # In unknown geometry cap at the creep floor - we don't have a validated
+            # corridor, so move minimally while the U-turn bias and gaps steer us.
+            v = self.v_min if unknown_geometry else self.avoid_speed(front)
+            omega = self.steer(target_x, left, right)
+            reason = "avoid_unknown_geometry_uturn" if unknown_geometry else "avoid_duckie"
+        else:  # CRUISE
+            target_x = goal_x
+            v = self.v_cruise
+            omega = self.steer(target_x, left, right)
+            reason = "cruise_lane_follow"
+
+        self.last_target_x = target_x
+
+        # --- output guard: single writer, never-freeze invariant -------------
+        omega = clamp(omega, -self.omega_max, self.omega_max)
+        if abs(v) < EPS and abs(omega) < EPS:
+            # omega_rotate is already floored at MIN_ESCAPE_OMEGA in __init__, so it is
+            # strong enough to break static friction rather than just buzzing the motors.
+            omega = self.escape_dir * self.omega_rotate
+            reason = "never_freeze_guard"
+
+        debug = self.build_debug(
+            now, left, right, left_open, right_open, spans, frees,
+            best_gap, goal_x, target_x, front, reason, v, omega,
+            drive_x, committed, passable,
+        )
+        return v, omega, debug
+
+    # ---- helpers ------------------------------------------------------------
+    def heading_bias(self, left, right):
+        """Fallback goal column when lines are untrusted: bias into the left U-turn.
+
+        Single seam where an encoder-measured turn could later replace the constant.
+        """
+        return clamp(left + 0.3 * (right - left), left, right)
+
+    def steer(self, target_x, left, right):
+        target_x = clamp(target_x, left, right)
+        return self.k_steer * (0.5 - target_x) * 2.0
+
+    def avoid_speed(self, front):
+        if front <= self.front_slow_ymax:
+            return self.v_avoid
+        if front >= self.front_block_ymax:
+            return self.v_min
+        t = (front - self.front_slow_ymax) / max(EPS, self.front_block_ymax - self.front_slow_ymax)
+        return self.v_avoid + t * (self.v_min - self.v_avoid)
+
+    @staticmethod
+    def column_blocked(x, spans):
+        return any(lo <= x <= hi for lo, hi in spans)
+
+    def pick_gap(self, frees, goal_x):
+        """Widest free interval, tie-broken toward the goal column.
+
+        The interval we are already driving into gets a width bonus, so two similar
+        gaps cannot trade places frame to frame and drag the target across the image.
+        """
+        if not frees:
+            return None
+
+        def score(iv):
+            width = iv[1] - iv[0]
+            if iv[0] <= self.last_target_x <= iv[1]:
+                width += GAP_STICKY_BONUS
+            return (width, -abs((iv[0] + iv[1]) / 2.0 - goal_x))
+
+        return max(frees, key=score)
+
+    @staticmethod
+    def gap_target(best_gap, goal_x):
+        """Aim at the goal column, clamped to stay safely inside the chosen gap.
+
+        This keeps us heading where we want to go (lane target / U-turn bias) while
+        holding a fixed clearance from the gap edges (which are inflated duckie
+        boundaries) - better for the "keep distance" requirement than blindly aiming
+        at the gap center, and it preserves the goal bias in a wide-open gap.
+
+        Pure and side-effect free, so ``step`` can ask "where would we drive?" for the
+        front clearance check without disturbing the avoid-side hysteresis.
+        """
+        if best_gap is None:
+            return goal_x
+        lo, hi = best_gap
+        inset = min(GAP_INSET, (hi - lo) / 2.0)
+        lo_s, hi_s = lo + inset, hi - inset
+        return (lo + hi) / 2.0 if hi_s < lo_s else clamp(goal_x, lo_s, hi_s)
+
+    def avoid_target(self, best_gap, goal_x):
+        """``gap_target`` plus directional hysteresis. Call once per tick."""
+        target = self.gap_target(best_gap, goal_x)
+
+        # Directional hysteresis: resist a small cross-center flip vs the last command
+        # to avoid frame-to-frame left/right chatter between two similar gaps.
+        side = 1.0 if target >= 0.5 else -1.0
+        if self.avoid_side != 0.0 and side != self.avoid_side and \
+                abs(target - self.last_target_x) < HYSTERESIS_MARGIN:
+            return self.last_target_x
+        self.avoid_side = side
+        return target
+
+    def enter(self, state, now):
+        if self.state != state:
+            self.state = state
+            self.state_since = now
+            if state != AVOID:
+                self.avoid_side = 0.0
+
+    def enter_escape(self, now, left, right, frees):
+        if self.state == ESCAPE_ROTATE:
+            # Latch direction until the minimum dwell elapses (anti-chatter).
+            return
+        self.state = ESCAPE_ROTATE
+        self.state_since = now
+        self.escape_dir = self.choose_escape_dir(left, right, frees)
+
+    def choose_escape_dir(self, left, right, frees):
+        """Rotate toward the side with more clearance; tie -> left (U-turn)."""
+        if self.left_open and not self.right_open:
+            return 1.0   # open on the left -> turn left into it
+        if self.right_open and not self.left_open:
+            return -1.0
+        mid = (left + right) / 2.0
+        left_clear = sum(min(hi, mid) - lo for lo, hi in frees if lo < mid)
+        right_clear = sum(hi - max(lo, mid) for lo, hi in frees if hi > mid)
+        if right_clear > left_clear + EPS:
+            return -1.0
+        return 1.0
+
+    def can_exit_escape(self, now):
+        return (now - self.state_since) >= self.escape_min_dwell
+
+    def build_debug(self, now, left, right, left_open, right_open, spans, frees,
+                    best_gap, goal_x, target_x, front, reason, v, omega,
+                    drive_x, committed, passable):
+        return {
+            "state": self.state,
+            "reason": reason,
+            "avoidance_active": self.state != CRUISE,
+            "plan_y_min": self.react_ymax,
+            "plan_y_max": PLAN_Y_MAX,
+            "lane_left": left,
+            "lane_right": right,
+            "corridor_left_open": left_open,
+            "corridor_right_open": right_open,
+            "blocked_intervals": [list(s) for s in spans],
+            "free_intervals": [list(f) for f in frees],
+            "selected_free_interval": list(best_gap) if best_gap else None,
+            "target_x": target_x,
+            "lane_target_x": goal_x,
+            "nearest_front_ymax": front,
+            # front is measured at drive_x (where we steer), not goal_x (the route).
+            "front_probe_x": drive_x,
+            "gap_passable": passable,
+            "avoid_committed": committed,
+            "num_raw_duckies": self.raw_duckie_count,
+            "num_active_duckies": len(self.active_duckies(now)),
+            "num_relevant_duckies": len(spans),
+            "num_small_duckies_filtered": self.small_duckie_count,
+            "lane_source": "lane_borders" if self.lane_fresh(now) else "stale_open",
+            "lane_error_trusted": self.lane_error_trusted,
+            "left_invalid_streak": self.left_invalid_streak,
+            "right_invalid_streak": self.right_invalid_streak,
+            "v": v,
+            "omega": omega,
+        }
+
+
+class ControlLaneNode:
     def __init__(self, node_name):
         rospy.init_node(node_name)
         self.node_name = node_name
         self.vehicle_name = os.environ.get("VEHICLE_NAME", "default_robot")
 
-        self.load_config()
-
-        # Dry-run mode. The node does everything it normally does - planning, PID,
-        # /debug/free_path_plan - but never writes a drive command. This exists so
-        # the dashboard stays fully populated during parameter tuning: the entire
-        # overlay (blocked/free intervals, chosen target, avoidance state) is fed by
-        # free_path_plan, which only this node publishes. Simply not starting the
-        # node blinds the dashboard.
-        self.publish_cmd = bool(rospy.get_param("~publish_cmd", True))
-
-        # Startup gate. An absent /detect/duckie_BB looks exactly like "no duckies
-        # ahead" to the planner (get_blocked_intervals returns no intervals), so
-        # driving on lane data alone while YOLO is still loading would happily steer
-        # into a duckie. Hold still until both detectors have proven they are alive.
-        self.require_detectors = bool(rospy.get_param("~require_detectors", True))
-        self.lane_stream_alive = False
-        self.obstacle_stream_alive = False
-        self.startup_gate_open = not self.require_detectors
-
-        if not self.require_detectors:
-            rospy.logwarn(
-                f"[{node_name}] require_detectors=false - controller will drive on "
-                f"lane data alone. Bench use only."
-            )
-
-        self.lastError = 0.0
+        params = self.load_config()
+        self.planner = GapPlanner(params)
         self.v = 0.0
-        self.a = 0.0
-        self.integral = 0.0
-        self.last_time = None
+        self.omega = 0.0
 
-        self.yellow_valid = False
-        self.white_valid = False
+        # Readiness gate: hold still until every sensing node has published at least
+        # once. The duckie node loads YOLO on startup (slow), so without this the
+        # controller would start driving on stale/default data before it can see.
+        self.got_lane = False
+        self.got_borders = False
+        self.got_duckies = False
 
-        self.current_lane_error = 0.0
-        self.last_lane_msg_time = 0.0
+        # Dry run: plan and publish debug exactly as normal, but never write a drive
+        # command. The dashboard overlay is fed entirely by /debug/free_path_plan,
+        # which only this node publishes, so simply not starting the node would blind
+        # the very view you tune against. The publisher is not registered at all, so
+        # `rostopic info car_cmd_switch_node/cmd` shows no publisher.
+        self.publish_cmd_enabled = bool(rospy.get_param("~publish_cmd", True))
 
-        self.lane_left_x = 0.05
-        self.lane_right_x = 0.95
-        self.lane_center_x = 0.5
-        self.last_lane_borders_time = 0.0
-
-        self.last_good_lane_left = 0.05
-        self.last_good_lane_right = 0.95
-        self.last_good_lane_time = 0.0
-
-        self.active_duckies = []
-        self.last_duckie_seen_time = 0.0
-        self.last_obstacle_msg_time = 0.0
-        self.duckie_missed_frames = 0
-        self.raw_duckies_count = 0
-        self.filtered_small_duckies_count = 0
-
-        self.latest_debug = {
-            "avoidance_active": False,
-            "reason": "waiting_for_data",
-        }
-
-        self.pid_mode = "lane"
-        self.last_avoidance_side = None
-        self.last_avoidance_target_x = None
-        self.last_avoidance_time = 0.0
-
-        self.no_valid_escape_since = None
-        self.blocked_recovery_active = False
-        self.blocked_recovery_start_time = 0.0
-        self.blocked_recovery_phase = None
-        self.blocked_recovery_omega_cmd = 0.0
-        self.blocked_recovery_best_target_x = None
-        self.blocked_recovery_best_debug = None
-        self.blocked_recovery_best_score = None
-        self.blocked_recovery_best_elapsed = 0.0
-        self.blocked_recovery_return_start_time = 0.0
-        self.blocked_recovery_return_duration = 0.0
-
-        self.avoidance_turn_in_place_active = False
-
-        base_topic = f"/{self.vehicle_name}"
-
-        # In dry-run the publisher is not even registered, so `rostopic info
-        # car_cmd_switch_node/cmd` shows no publisher at all. That is a stronger and
-        # more legible guarantee than registering and then declining to send, and it
-        # keeps the "exactly one publisher on cmd" invariant honest.
-        if self.publish_cmd:
-            self.pub_cmd_vel = rospy.Publisher(
-                f"{base_topic}/car_cmd_switch_node/cmd",
-                Twist2DStamped,
-                queue_size=1,
-            )
+        base = f"/{self.vehicle_name}"
+        if self.publish_cmd_enabled:
+            self.pub_cmd = rospy.Publisher(f"{base}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
         else:
-            self.pub_cmd_vel = None
+            self.pub_cmd = None
             rospy.logwarn(
-                f"[{self.node_name}] DRY RUN (publish_cmd=false): planning and debug "
-                f"output are live, no drive command will be published. "
-                f"The robot will not move."
+                f"[{node_name}] DRY RUN (publish_cmd=false): planning and debug output "
+                f"are live, no drive command is published. The robot will not move."
             )
+        self.pub_debug = rospy.Publisher(f"{base}/debug/free_path_plan", String, queue_size=1)
 
-        self.pub_debug_plan = rospy.Publisher(
-            f"{base_topic}/debug/free_path_plan",
-            String,
-            queue_size=1,
-        )
+        rospy.Subscriber(f"{base}/detect/lane", Float64, self.cb_lane, queue_size=1)
+        rospy.Subscriber(f"{base}/detect/lane_borders", String, self.cb_lane_borders, queue_size=1)
+        rospy.Subscriber(f"{base}/detect/duckie_BB", String, self.cb_obstacles, queue_size=1)
 
-        self.sub_lane = rospy.Subscriber(
-            f"{base_topic}/detect/lane",
-            Float64,
-            self.cbFollowLane,
-            queue_size=1,
-        )
-
-        self.sub_lane_borders = rospy.Subscriber(
-            f"{base_topic}/detect/lane_borders",
-            String,
-            self.cbLaneBorders,
-            queue_size=1,
-        )
-
-        self.sub_obstacles = rospy.Subscriber(
-            f"{base_topic}/detect/duckie_BB",
-            String,
-            self.cbObstacles,
-            queue_size=1,
-        )
-
-        rospy.on_shutdown(self.fnShutDown)
-
-    def _param(self, group, key, default):
-        return group.get(key, {}).get("default", default)
+        rospy.on_shutdown(self.shutdown)
+        rospy.loginfo(f"[{node_name}] follow-the-gap controller ready for {self.vehicle_name}")
 
     def load_config(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(current_dir, "../config/control_lane_node.json")
-
-        params = {}
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, "r") as f:
-                    config = json.load(f)
-                params = config.get("parameters", config)
-            except Exception as e:
-                rospy.logwarn(f"[{self.node_name}] Could not load config: {e}. Using defaults.")
-        else:
-            rospy.logwarn(f"[{self.node_name}] Config not found: {config_path}. Using defaults.")
-
-        pid = params.get("pid", {})
-        self.kp = float(self._param(pid, "p", 6.0))
-        self.ki = float(self._param(pid, "i", 0.0))
-        self.kd = float(self._param(pid, "d", 1.0))
-        self.MAX_VEL = float(self._param(pid, "max_vel", 0.25))
-
-        planner = params.get("path_planner", {})
-
-        raw_y_min = float(self._param(planner, "y_min", 0.50))
-        raw_y_max = float(self._param(planner, "y_max", 0.92))
-        self.plan_y_min = min(raw_y_min, raw_y_max)
-        self.plan_y_max = max(raw_y_min, raw_y_max)
-
-        self.duckie_x_margin = float(self._param(planner, "duckie_x_margin", 0.08))
-        self.duckie_y_margin = float(self._param(planner, "duckie_y_margin", 0.04))
-        self.lane_margin = float(self._param(planner, "lane_margin", 0.02))
-
-        self.planner_image_width_px = int(self._param(planner, "planner_image_width_px", 192))
-        self.min_free_width_px = int(self._param(planner, "min_free_width_px", 30))
-
-        self.lane_timeout = float(self._param(planner, "lane_timeout", 1.0))
-        self.obstacle_timeout = float(self._param(planner, "obstacle_timeout", 1.2))
-        self.duckie_hold_time = float(self._param(planner, "duckie_hold_time", 0.8))
-        self.duckie_missed_frames_before_clear = int(
-            self._param(planner, "duckie_missed_frames_before_clear", 4)
-        )
-
-        self.max_omega = float(self._param(planner, "max_omega", 5.0))
-        self.min_vel = float(self._param(planner, "min_vel", 0.04))
-
-        self.avoidance_vel = float(self._param(planner, "avoidance_vel", 0.08))
-        self.avoidance_steering_gain = float(self._param(planner, "avoidance_steering_gain", 1.20))
-
-        self.avoidance_turn_in_place_error_enter = float(
-            self._param(planner, "avoidance_turn_in_place_error_enter", 0.55)
-        )
-        self.avoidance_turn_in_place_error_exit = float(
-            self._param(planner, "avoidance_turn_in_place_error_exit", 0.25)
-        )
-        self.avoidance_turn_in_place_omega = float(
-            self._param(planner, "avoidance_turn_in_place_omega", 0.45)
-        )
-
-        self.avoidance_kp = float(self._param(planner, "avoidance_kp", 4.0))
-        self.avoidance_ki = float(self._param(planner, "avoidance_ki", 0.0))
-        self.avoidance_kd = float(self._param(planner, "avoidance_kd", 0.0))
-
-        self.avoidance_side_lock_time = float(self._param(planner, "avoidance_side_lock_time", 1.0))
-        self.avoidance_side_lock_bonus = float(self._param(planner, "avoidance_side_lock_bonus", 0.20))
-        self.avoidance_target_smoothing_alpha = float(
-            self._param(planner, "avoidance_target_smoothing_alpha", 0.45)
-        )
-
-        self.avoidance_clear_hold_time = float(self._param(planner, "avoidance_clear_hold_time", 1.0))
-        self.lane_reentry_blend_time = float(self._param(planner, "lane_reentry_blend_time", 0.8))
-        self.reentry_vel = float(self._param(planner, "reentry_vel", 0.09))
-
-        self.lane_target_block_margin = float(self._param(planner, "lane_target_block_margin", 0.10))
-        self.escape_clearance = float(self._param(planner, "escape_clearance", 0.04))
-        self.gap_width_bonus_weight = float(self._param(planner, "gap_width_bonus_weight", 0.05))
-        self.narrow_gap_behavior = str(self._param(planner, "narrow_gap_behavior", "stop"))
-
-        self.obstacle_image_width_px = int(self._param(planner, "obstacle_image_width_px", 640))
-        self.obstacle_image_height_px = int(self._param(planner, "obstacle_image_height_px", 480))
-        self.min_duckie_width_px = int(self._param(planner, "min_duckie_width_px", 24))
-        self.min_duckie_height_px = int(self._param(planner, "min_duckie_height_px", 24))
-        self.min_duckie_area_px = int(self._param(planner, "min_duckie_area_px", 700))
-
-        self.default_lane_left = float(self._param(planner, "default_lane_left", 0.05))
-        self.default_lane_right = float(self._param(planner, "default_lane_right", 0.95))
-
-        self.open_side_width_bonus = float(self._param(planner, "open_side_width_bonus", 0.35))
-
-        self.blocked_recovery_delay = float(self._param(planner, "blocked_recovery_delay", 2.0))
-        self.blocked_recovery_omega = float(self._param(planner, "blocked_recovery_omega", 0.20))
-        self.blocked_recovery_min_turn_time = float(
-            self._param(planner, "blocked_recovery_min_turn_time", 0.45)
-        )
-        self.blocked_recovery_min_angle_deg = float(
-            self._param(planner, "blocked_recovery_min_angle_deg", 35.0)
-        )
-        self.blocked_recovery_max_angle_deg = float(
-            self._param(planner, "blocked_recovery_max_angle_deg", 80.0)
-        )
-
-        rospy.loginfo(
-            f"[{self.node_name}] Params: kp={self.kp}, kd={self.kd}, max_vel={self.MAX_VEL}, "
-            f"avoidance_vel={self.avoidance_vel}, y_band=({self.plan_y_min}, {self.plan_y_max}), "
-            f"duckie_margin={self.duckie_x_margin}, target_block_margin={self.lane_target_block_margin}, "
-            f"avoidance_pid=({self.avoidance_kp},{self.avoidance_ki},{self.avoidance_kd}), "
-            f"min_duckie=({self.min_duckie_width_px}x{self.min_duckie_height_px}px, area={self.min_duckie_area_px}), "
-            f"clear_hold={self.avoidance_clear_hold_time}, reentry_blend={self.lane_reentry_blend_time}, "
-            f"open_side_bonus={self.open_side_width_bonus}, "
-            f"blocked_recovery=({self.blocked_recovery_delay}s,{self.blocked_recovery_omega}rad/s,"
-            f"min_time={self.blocked_recovery_min_turn_time}s,"
-            f"min_angle={self.blocked_recovery_min_angle_deg}deg,"
-            f"max_angle={self.blocked_recovery_max_angle_deg}deg)"
-        )
-
-    @staticmethod
-    def clamp01(value):
-        return max(0.0, min(1.0, float(value)))
-
-    def lane_borders_recent(self):
-        return (rospy.Time.now().to_sec() - self.last_lane_borders_time) < self.lane_timeout
-
-    def good_lane_recent(self):
-        return (rospy.Time.now().to_sec() - self.last_good_lane_time) < self.lane_timeout
-
-    def obstacle_data_recent(self):
-        if not self.active_duckies:
-            return False
-        now = rospy.Time.now().to_sec()
-        return (now - self.last_duckie_seen_time) < self.duckie_hold_time
-
-    def extract_duckie_box(self, duckie):
-        xmin = float(duckie.get("xmin", duckie["x_center"] - duckie["width"] / 2.0))
-        xmax = float(duckie.get("xmax", duckie["x_center"] + duckie["width"] / 2.0))
-        ymin = float(duckie.get("ymin", duckie["y_center"] - duckie["height"] / 2.0))
-        ymax = float(duckie.get("ymax", duckie["y_center"] + duckie["height"] / 2.0))
-        return self.clamp01(xmin), self.clamp01(xmax), self.clamp01(ymin), self.clamp01(ymax)
-
-    def duckie_large_enough(self, duckie):
-        try:
-            xmin, xmax, ymin, ymax = self.extract_duckie_box(duckie)
-        except Exception:
-            return False
-
-        width_px = (xmax - xmin) * float(self.obstacle_image_width_px)
-        height_px = (ymax - ymin) * float(self.obstacle_image_height_px)
-        area_px = width_px * height_px
-
-        return (
-            width_px >= self.min_duckie_width_px and
-            height_px >= self.min_duckie_height_px and
-            area_px >= self.min_duckie_area_px
-        )
-
-    def cbObstacles(self, msg):
-        now = rospy.Time.now().to_sec()
-        self.last_obstacle_msg_time = now
-
-        # detect_obstacle_node publishes on every processed frame whether or not it
-        # saw anything, so an arriving message - even an empty one - is proof the
-        # detector is up. That is what makes it usable as the startup heartbeat.
-        self.obstacle_stream_alive = True
-
-        try:
-            data = json.loads(msg.data)
-            raw_duckies = data.get("duckies", [])
-
-            if not raw_duckies and data.get("detected", False):
-                if data.get("class_name", "").lower() == "duckie":
-                    raw_duckies = [data]
-
-            self.raw_duckies_count = len(raw_duckies)
-
-            filtered = []
-            small_count = 0
-
-            for duckie in raw_duckies:
-                if duckie.get("class_name", "").lower() != "duckie":
-                    continue
-
-                if self.duckie_large_enough(duckie):
-                    filtered.append(duckie)
-                else:
-                    small_count += 1
-
-            self.filtered_small_duckies_count = small_count
-
-            if filtered:
-                self.active_duckies = filtered
-                self.last_duckie_seen_time = now
-                self.duckie_missed_frames = 0
-                return
-
-            self.duckie_missed_frames += 1
-
-            clear_by_frames = self.duckie_missed_frames >= self.duckie_missed_frames_before_clear
-            clear_by_time = (now - self.last_duckie_seen_time) > self.duckie_hold_time
-
-            if clear_by_frames and clear_by_time:
-                self.active_duckies = []
-
-        except Exception as e:
-            rospy.logwarn_throttle(1.0, f"[{self.node_name}] Could not parse duckie_BB: {e}")
-
-    def cbLaneBorders(self, msg):
-        try:
-            data = json.loads(msg.data)
-
-            if not bool(data.get("valid", True)):
-                return
-
-            yellow_x = self.clamp01(data.get("yellow_x", self.lane_left_x))
-            white_x = self.clamp01(data.get("white_x", self.lane_right_x))
-
-            yellow_valid = bool(data.get("yellow_valid", True))
-            white_valid = bool(data.get("white_valid", True))
-
-            if yellow_valid and white_valid and yellow_x >= white_x:
-                return
-
-            if yellow_valid:
-                self.lane_left_x = yellow_x
-
-            if white_valid:
-                self.lane_right_x = white_x
-
-            self.yellow_valid = yellow_valid
-            self.white_valid = white_valid
-
-            if self.lane_left_x < self.lane_right_x:
-                self.lane_center_x = self.clamp01(
-                    data.get("lane_center_x", (self.lane_left_x + self.lane_right_x) / 2.0)
-                )
-
-            self.last_lane_borders_time = rospy.Time.now().to_sec()
-
-            if yellow_valid and white_valid:
-                width = self.lane_right_x - self.lane_left_x
-                if 0.25 <= width <= 0.95:
-                    self.last_good_lane_left = self.lane_left_x
-                    self.last_good_lane_right = self.lane_right_x
-                    self.last_good_lane_time = self.last_lane_borders_time
-
-        except Exception as e:
-            rospy.logwarn_throttle(1.0, f"[{self.node_name}] Could not parse lane_borders: {e}")
-
-    def get_lane_limits(self):
-        if self.lane_borders_recent():
-            if self.yellow_valid:
-                lane_left = self.lane_left_x + self.lane_margin
-                left_open = False
-            else:
-                lane_left = 0.0
-                left_open = True
-
-            if self.white_valid:
-                lane_right = self.lane_right_x - self.lane_margin
-                right_open = False
-            else:
-                lane_right = 1.0
-                right_open = True
-
-            source = "current_lane_borders"
-
-        elif self.good_lane_recent():
-            lane_left = self.last_good_lane_left + self.lane_margin
-            lane_right = self.last_good_lane_right - self.lane_margin
-            left_open = False
-            right_open = False
-            source = "last_good_lane_borders"
-
-        else:
-            lane_left = self.default_lane_left
-            lane_right = self.default_lane_right
-            left_open = False
-            right_open = False
-            source = "default_lane_borders"
-
-        lane_left = self.clamp01(lane_left)
-        lane_right = self.clamp01(lane_right)
-
-        if lane_right <= lane_left:
-            lane_left = self.default_lane_left
-            lane_right = self.default_lane_right
-            left_open = False
-            right_open = False
-            source = "default_invalid_lane"
-
-        return lane_left, lane_right, source, left_open, right_open
-
-    def get_blocked_intervals(self, lane_left, lane_right):
-        blocked = []
-        relevant_count = 0
-
-        if not self.obstacle_data_recent():
-            return [], 0
-
-        for duckie in self.active_duckies:
-            try:
-                xmin, xmax, ymin, ymax = self.extract_duckie_box(duckie)
-            except Exception:
-                continue
-
-            if ymax < (self.plan_y_min - self.duckie_y_margin):
-                continue
-
-            if ymin > (self.plan_y_max + self.duckie_y_margin):
-                continue
-
-            left = max(lane_left, xmin - self.duckie_x_margin)
-            right = min(lane_right, xmax + self.duckie_x_margin)
-
-            if right > left:
-                blocked.append((left, right))
-                relevant_count += 1
-
-        if not blocked:
-            return [], relevant_count
-
-        blocked.sort(key=lambda interval: interval[0])
-
-        merged = [blocked[0]]
-        for left, right in blocked[1:]:
-            last_left, last_right = merged[-1]
-
-            if left <= last_right:
-                merged[-1] = (last_left, max(last_right, right))
-            else:
-                merged.append((left, right))
-
-        return merged, relevant_count
-
-    def get_free_intervals(self, lane_left, lane_right, blocked):
-        free = []
-        cursor = lane_left
-
-        for left, right in blocked:
-            if left > cursor:
-                free.append((cursor, left))
-            cursor = max(cursor, right)
-
-        if cursor < lane_right:
-            free.append((cursor, lane_right))
-
-        return free
-
-    def interval_width_px(self, interval):
-        return int(round((interval[1] - interval[0]) * float(self.planner_image_width_px)))
-
-    def find_blocking_interval(self, lane_target_x, blocked):
-        for left, right in blocked:
-            if (left - self.lane_target_block_margin) <= lane_target_x <= (right + self.lane_target_block_margin):
-                return (left, right)
-        return None
-
-    def free_interval_containing(self, x, free_intervals):
-        for interval in free_intervals:
-            if interval[0] <= x <= interval[1]:
-                return interval
-        return None
-
-    def interval_effective_width(self, interval, left_open=False, right_open=False):
-        effective_width = interval[1] - interval[0]
-
-        if left_open and interval[0] <= 0.001:
-            effective_width += self.open_side_width_bonus
-
-        if right_open and interval[1] >= 0.999:
-            effective_width += self.open_side_width_bonus
-
-        return effective_width
-
-    def choose_escape_target(
-        self,
-        lane_target_x,
-        blocking_interval,
-        free_intervals,
-        left_open=False,
-        right_open=False,
-    ):
-        block_left, block_right = blocking_interval
-
-        candidates = []
-        now = rospy.Time.now().to_sec()
-
-        side_lock_active = (
-            self.last_avoidance_side is not None and
-            (now - self.last_avoidance_time) < self.avoidance_side_lock_time
-        )
-
-        raw_points = [
-            (block_left - self.escape_clearance, "left_escape"),
-            (block_right + self.escape_clearance, "right_escape"),
-        ]
-
-        for point, side in raw_points:
-            point = self.clamp01(point)
-            interval = self.free_interval_containing(point, free_intervals)
-
-            if interval is None:
-                continue
-
-            width_px = self.interval_width_px(interval)
-            if width_px < self.min_free_width_px:
-                continue
-
-            safe_left = interval[0] + self.escape_clearance
-            safe_right = interval[1] - self.escape_clearance
-
-            if safe_right <= safe_left:
-                target = (interval[0] + interval[1]) / 2.0
-            else:
-                target = (safe_left + safe_right) / 2.0
-
-            target = max(interval[0], min(interval[1], target))
-
-            distance = abs(target - lane_target_x)
-            effective_width = self.interval_effective_width(
-                interval,
-                left_open=left_open,
-                right_open=right_open,
-            )
-            width_bonus = effective_width * self.gap_width_bonus_weight
-
-            score = distance - width_bonus
-
-            if side == self.last_avoidance_side and side_lock_active:
-                score -= self.avoidance_side_lock_bonus
-
-            candidates.append((score, distance, target, side, interval, width_px))
-
-        if candidates:
-            candidates.sort(key=lambda item: item[0])
-            _, _, point, side, interval, width_px = candidates[0]
-            return point, side, interval, width_px
-
-        fallback = []
-        for interval in free_intervals:
-            width_px = self.interval_width_px(interval)
-
-            if width_px < self.min_free_width_px:
-                continue
-
-            safe_left = interval[0] + self.escape_clearance
-            safe_right = interval[1] - self.escape_clearance
-
-            if safe_right <= safe_left:
-                target = (interval[0] + interval[1]) / 2.0
-            else:
-                target = (safe_left + safe_right) / 2.0
-
-            target = max(interval[0], min(interval[1], target))
-
-            distance = abs(target - lane_target_x)
-            effective_width = self.interval_effective_width(
-                interval,
-                left_open=left_open,
-                right_open=right_open,
-            )
-            width_bonus = effective_width * self.gap_width_bonus_weight
-            score = distance - width_bonus
-
-            fallback.append((score, target, "nearest_free_interval", interval, width_px))
-
-        if not fallback:
-            return None, "no_valid_escape", None, 0
-
-        fallback.sort(key=lambda item: item[0])
-        _, point, side, interval, width_px = fallback[0]
-        return point, side, interval, width_px
-
-    def choose_avoidance_target(self, lane_error):
-        lane_target_x = self.clamp01((1.0 - lane_error) / 2.0)
-
-        lane_left, lane_right, lane_source, left_open, right_open = self.get_lane_limits()
-        blocked, relevant_count = self.get_blocked_intervals(lane_left, lane_right)
-        free_intervals = self.get_free_intervals(lane_left, lane_right, blocked)
-
-        debug = {
-            "avoidance_active": False,
-            "valid": True,
-            "reason": "lane_follow_no_relevant_duckie",
-            "target_x": lane_target_x,
-            "lane_target_x": lane_target_x,
-            "lane_left": lane_left,
-            "lane_right": lane_right,
-            "lane_source": lane_source,
-            "left_open": left_open,
-            "right_open": right_open,
-            "plan_y_min": self.plan_y_min,
-            "plan_y_max": self.plan_y_max,
-            "blocked_intervals": blocked,
-            "free_intervals": free_intervals if blocked else [],
-            "selected_free_interval": None,
-            "selected_free_width_px": 0,
-            "min_free_width_px": self.min_free_width_px,
-            "num_raw_duckies": self.raw_duckies_count,
-            "num_active_duckies": len(self.active_duckies),
-            "num_small_duckies_filtered": self.filtered_small_duckies_count,
-            "num_relevant_duckies": relevant_count,
+        defaults = {
+            "v_cruise": 0.10, "v_avoid": 0.06, "v_min": 0.06, "k_steer": 6.0,
+            "omega_rotate": 3.0, "omega_max": 4.0, "lane_margin": 0.08,
+            "duckie_margin_base": 0.06, "duckie_margin_gain": 0.12, "gap_min_width": 0.16,
+            "react_ymax": 0.62, "front_slow_ymax": 0.72, "front_block_ymax": 0.88,
+            "escape_min_dwell": 0.5, "escape_relax_after": 2.0,
+            "lane_hold_frames": 12, "duckie_hold_time": 1.0,
+            "avoid_min_dwell": 0.8, "front_slice_half": 0.04,
         }
-
-        if relevant_count <= 0 or not blocked:
-            return None, debug
-
-        blocking_interval = self.find_blocking_interval(lane_target_x, blocked)
-
-        if blocking_interval is None:
-            debug["reason"] = "lane_follow_target_not_blocked"
-            return None, debug
-
-        if not free_intervals:
-            debug["avoidance_active"] = True
-            debug["valid"] = False
-            debug["reason"] = "no_free_interval"
-            return "STOP", debug
-
-        target_x, side, selected_interval, selected_width_px = self.choose_escape_target(
-            lane_target_x,
-            blocking_interval,
-            free_intervals,
-            left_open=left_open,
-            right_open=right_open,
-        )
-
-        debug["avoidance_active"] = True
-        debug["blocking_interval"] = blocking_interval
-        debug["avoidance_side"] = side
-        debug["selected_free_interval"] = selected_interval
-        debug["selected_free_width_px"] = selected_width_px
-        debug["widest_free_interval"] = selected_interval
-        debug["widest_free_width_px"] = selected_width_px
-
-        if target_x is None:
-            debug["valid"] = False
-            debug["reason"] = "no_valid_escape_target"
-
-            if self.narrow_gap_behavior == "stop":
-                return "STOP", debug
-
-            return None, debug
-
-        target_x = max(lane_left, min(lane_right, target_x))
-
-        now = rospy.Time.now().to_sec()
-        if (
-            self.last_avoidance_target_x is not None and
-            (now - self.last_avoidance_time) < self.avoidance_side_lock_time
-        ):
-            alpha = self.avoidance_target_smoothing_alpha
-            target_x = alpha * target_x + (1.0 - alpha) * self.last_avoidance_target_x
-            target_x = max(lane_left, min(lane_right, target_x))
-
-        debug["reason"] = f"duckie_avoid_{side}"
-        debug["target_x"] = target_x
-        debug["target_smoothed"] = True
-
-        return target_x, debug
-
-    def reset_avoidance_turn_in_place(self):
-        self.avoidance_turn_in_place_active = False
-
-    def should_turn_in_place_for_avoidance(self, raw_avoid_error):
-        abs_error = abs(raw_avoid_error)
-
-        if self.avoidance_turn_in_place_active:
-            if abs_error <= self.avoidance_turn_in_place_error_exit:
-                self.avoidance_turn_in_place_active = False
-                return False
-            return True
-
-        if abs_error >= self.avoidance_turn_in_place_error_enter:
-            self.avoidance_turn_in_place_active = True
-            return True
-
-        return False
-
-    def apply_avoidance_turn_in_place(self, raw_avoid_error, debug):
-        turn_direction = 1.0 if raw_avoid_error >= 0.0 else -1.0
-        omega = turn_direction * abs(self.avoidance_turn_in_place_omega)
-        omega = max(min(omega, self.max_omega), -self.max_omega)
-
-        self.v = 0.0
-        self.a = omega
-        self.integral = 0.0
-        self.lastError = raw_avoid_error
-        self.last_time = rospy.Time.now().to_sec()
-        self.pid_mode = "avoidance"
-
-        debug["reason"] = "avoidance_turn_in_place"
-        debug["avoidance_turn_in_place_active"] = True
-        debug["avoidance_turn_in_place_error"] = raw_avoid_error
-        debug["avoidance_turn_in_place_enter"] = self.avoidance_turn_in_place_error_enter
-        debug["avoidance_turn_in_place_exit"] = self.avoidance_turn_in_place_error_exit
-        debug["avoidance_turn_in_place_omega"] = omega
-        debug["error"] = raw_avoid_error
-        debug["v"] = self.v
-        debug["omega"] = self.a
-
-        return debug
-
-    def calculate_pid(self, error, velocity_override=None, mode="lane"):
-        current_time = rospy.Time.now().to_sec()
-
-        mode_changed = mode != self.pid_mode
-        if mode_changed:
-            self.pid_mode = mode
-            self.integral = 0.0
-
-        if mode == "avoidance":
-            kp = self.avoidance_kp
-            ki = self.avoidance_ki
-            kd = self.avoidance_kd
-        else:
-            kp = self.kp
-            ki = self.ki
-            kd = self.kd
-
-        if self.last_time is None:
-            self.last_time = current_time
-            self.lastError = error
-            self.v = self.MAX_VEL if velocity_override is None else velocity_override
-            self.a = max(min(kp * error, self.max_omega), -self.max_omega)
-            return
-
-        dt = current_time - self.last_time
-
-        if dt > 0.0:
-            p_term = kp * error
-
-            self.integral += error * dt
-            max_integral = 1.0
-            self.integral = max(min(self.integral, max_integral), -max_integral)
-
-            i_term = ki * self.integral
-
-            if mode_changed:
-                d_term = 0.0
-            else:
-                d_term = kd * ((error - self.lastError) / dt)
-
-            omega = p_term + i_term + d_term
-            omega = max(min(omega, self.max_omega), -self.max_omega)
-
-            velocity = self.MAX_VEL if velocity_override is None else velocity_override
-            velocity = max(velocity, self.min_vel)
-
-            self.v = velocity
-            self.a = omega
-
-        self.lastError = error
-        self.last_time = current_time
-
-    def get_post_avoidance_target(self, lane_error, debug):
-        if self.last_avoidance_target_x is None:
-            return None, None, debug
-
-        now = rospy.Time.now().to_sec()
-        elapsed = now - self.last_avoidance_time
-        lane_target_x = self.clamp01((1.0 - lane_error) / 2.0)
-
-        if elapsed < self.avoidance_clear_hold_time:
-            debug["avoidance_active"] = True
-            debug["reason"] = "post_avoidance_clear_hold"
-            debug["target_x"] = self.last_avoidance_target_x
-            debug["post_avoidance_elapsed"] = elapsed
-            debug["post_avoidance_phase"] = "hold"
-            return self.last_avoidance_target_x, self.avoidance_vel, debug
-
-        blend_end = self.avoidance_clear_hold_time + self.lane_reentry_blend_time
-
-        if elapsed < blend_end and self.lane_reentry_blend_time > 0.0:
-            progress = (elapsed - self.avoidance_clear_hold_time) / self.lane_reentry_blend_time
-            progress = max(0.0, min(1.0, progress))
-
-            target_x = (1.0 - progress) * self.last_avoidance_target_x + progress * lane_target_x
-            target_x = self.clamp01(target_x)
-
-            debug["avoidance_active"] = True
-            debug["reason"] = "post_avoidance_lane_reentry"
-            debug["target_x"] = target_x
-            debug["lane_target_x"] = lane_target_x
-            debug["post_avoidance_elapsed"] = elapsed
-            debug["post_avoidance_phase"] = "blend"
-            debug["reentry_progress"] = progress
-
-            return target_x, self.reentry_vel, debug
-
-        self.last_avoidance_target_x = None
-        self.last_avoidance_side = None
-
-        return None, None, debug
-
-    def reset_blocked_recovery(self):
-        self.no_valid_escape_since = None
-        self.blocked_recovery_active = False
-        self.blocked_recovery_start_time = 0.0
-        self.blocked_recovery_phase = None
-        self.blocked_recovery_omega_cmd = 0.0
-        self.blocked_recovery_best_target_x = None
-        self.blocked_recovery_best_debug = None
-        self.blocked_recovery_best_score = None
-        self.blocked_recovery_best_elapsed = 0.0
-        self.blocked_recovery_return_start_time = 0.0
-        self.blocked_recovery_return_duration = 0.0
-
-    def choose_blocked_recovery_omega(self, debug):
-        omega = abs(self.blocked_recovery_omega)
-        if omega <= 0.0:
-            omega = 0.20
-
-        # Wenn nur eine Linie sichtbar ist, ist die Lage am Rand eindeutig.
-        # Außen zwischen weißer Linie und Duckie: nach links in die freie Fläche drehen.
-        if self.white_valid and not self.yellow_valid:
-            debug["blocked_recovery_direction_reason"] = "white_only_turn_left"
-            return omega
-
-        # Innen zwischen gelber Linie und Duckie: nach rechts in die freie Fläche drehen.
-        if self.yellow_valid and not self.white_valid:
-            debug["blocked_recovery_direction_reason"] = "yellow_only_turn_right"
-            return -omega
-
-        # Sonst möglichst von der zuletzt gewählten Avoidance-Seite wegdrehen.
-        if self.last_avoidance_side == "left_escape":
-            debug["blocked_recovery_direction_reason"] = "last_left_escape_turn_left"
-            return omega
-
-        if self.last_avoidance_side == "right_escape":
-            debug["blocked_recovery_direction_reason"] = "last_right_escape_turn_right"
-            return -omega
-
-        debug["blocked_recovery_direction_reason"] = "default_turn_left"
-        return omega
-
-    def blocked_recovery_scan_duration(self):
-        omega_abs = abs(self.blocked_recovery_omega_cmd)
-        if omega_abs <= 0.0:
-            omega_abs = max(abs(self.blocked_recovery_omega), 0.20)
-
-        min_angle_time = math.radians(max(0.0, self.blocked_recovery_min_angle_deg)) / omega_abs
-        max_angle_time = math.radians(max(0.0, self.blocked_recovery_max_angle_deg)) / omega_abs
-
-        scan_time = max(0.0, self.blocked_recovery_min_turn_time, min_angle_time)
-
-        if max_angle_time > 0.0:
-            scan_time = min(scan_time, max_angle_time)
-
-        return scan_time
-
-    def start_blocked_recovery_scan(self, debug):
-        self.blocked_recovery_active = True
-        self.blocked_recovery_phase = "scan"
-        self.blocked_recovery_start_time = rospy.Time.now().to_sec()
-        self.blocked_recovery_omega_cmd = self.choose_blocked_recovery_omega(debug)
-        self.blocked_recovery_best_target_x = None
-        self.blocked_recovery_best_debug = None
-        self.blocked_recovery_best_score = None
-        self.blocked_recovery_best_elapsed = 0.0
-        self.blocked_recovery_return_start_time = 0.0
-        self.blocked_recovery_return_duration = 0.0
-
-    def score_blocked_recovery_candidate(self, target_x, debug):
-        selected_width_px = float(debug.get("selected_free_width_px", 0.0))
-        lane_target_x = float(debug.get("lane_target_x", 0.5))
-        distance_px = abs(float(target_x) - lane_target_x) * float(self.planner_image_width_px)
-        return selected_width_px - distance_px
-
-    def remember_blocked_recovery_candidate(self, target_x, debug):
-        if target_x is None or target_x == "STOP":
-            return
-
-        score = self.score_blocked_recovery_candidate(target_x, debug)
-        elapsed = rospy.Time.now().to_sec() - self.blocked_recovery_start_time
-
-        if self.blocked_recovery_best_score is None or score > self.blocked_recovery_best_score:
-            best_debug = dict(debug)
-            best_debug["blocked_recovery_best_score"] = score
-            best_debug["blocked_recovery_best_elapsed"] = elapsed
-
-            self.blocked_recovery_best_score = score
-            self.blocked_recovery_best_target_x = target_x
-            self.blocked_recovery_best_debug = best_debug
-            self.blocked_recovery_best_elapsed = elapsed
-
-    def apply_blocked_recovery_turn(self, debug, omega, reason):
-        self.v = 0.0
-        self.a = omega
-        debug["reason"] = reason
-        debug["blocked_recovery_active"] = True
-        debug["blocked_recovery_phase"] = self.blocked_recovery_phase
-        debug["blocked_recovery_omega"] = omega
-        debug["blocked_recovery_scan_elapsed"] = (
-            rospy.Time.now().to_sec() - self.blocked_recovery_start_time
-        )
-        debug["blocked_recovery_scan_duration"] = self.blocked_recovery_scan_duration()
-        debug["blocked_recovery_best_target_x"] = self.blocked_recovery_best_target_x
-        debug["blocked_recovery_best_score"] = self.blocked_recovery_best_score
-        return debug
-
-    def handle_blocked_recovery_candidate(self, target_x, debug):
-        if not self.blocked_recovery_active:
-            return target_x, debug, True
-
-        now = rospy.Time.now().to_sec()
-
-        if self.blocked_recovery_phase == "scan":
-            self.remember_blocked_recovery_candidate(target_x, debug)
-            scan_elapsed = now - self.blocked_recovery_start_time
-            scan_duration = self.blocked_recovery_scan_duration()
-
-            if scan_elapsed < scan_duration:
-                debug = self.apply_blocked_recovery_turn(
-                    debug,
-                    self.blocked_recovery_omega_cmd,
-                    "blocked_recovery_scanning_best_gap",
-                )
-                return None, debug, False
-
-            if self.blocked_recovery_best_target_x is None:
-                return target_x, debug, True
-
-            angle_back_time = max(0.0, scan_elapsed - self.blocked_recovery_best_elapsed)
-            self.blocked_recovery_phase = "return"
-            self.blocked_recovery_return_start_time = now
-            self.blocked_recovery_return_duration = angle_back_time
-
-        if self.blocked_recovery_phase == "return":
-            return_elapsed = now - self.blocked_recovery_return_start_time
-
-            if return_elapsed < self.blocked_recovery_return_duration:
-                best_debug = dict(self.blocked_recovery_best_debug or debug)
-                best_debug = self.apply_blocked_recovery_turn(
-                    best_debug,
-                    -self.blocked_recovery_omega_cmd,
-                    "blocked_recovery_returning_to_best_gap",
-                )
-                best_debug["blocked_recovery_return_elapsed"] = return_elapsed
-                best_debug["blocked_recovery_return_duration"] = self.blocked_recovery_return_duration
-                return None, best_debug, False
-
-            best_debug = dict(self.blocked_recovery_best_debug or debug)
-            best_debug["reason"] = "blocked_recovery_use_best_gap"
-            best_debug["blocked_recovery_active"] = False
-            best_debug["blocked_recovery_phase"] = "done"
-            return self.blocked_recovery_best_target_x, best_debug, True
-
-        return target_x, debug, True
-
-    def handle_no_valid_escape(self, debug):
-        now = rospy.Time.now().to_sec()
-
-        if self.no_valid_escape_since is None:
-            self.no_valid_escape_since = now
-
-        blocked_elapsed = now - self.no_valid_escape_since
-        debug["blocked_elapsed"] = blocked_elapsed
-
-        # Erst kurz warten, damit kurze Fehlentscheidungen nicht sofort zum Drehen führen.
-        if blocked_elapsed < self.blocked_recovery_delay:
-            self.v = 0.0
-            self.a = 0.0
-            debug["reason"] = "no_valid_escape_waiting"
-            debug["blocked_recovery_active"] = False
-            return debug
-
-        if not self.blocked_recovery_active:
-            self.start_blocked_recovery_scan(debug)
-
-        # Während der Scan-Phase nicht sofort losfahren, sondern erst nach einer besseren Lücke suchen.
-        if self.blocked_recovery_phase == "scan":
-            return self.apply_blocked_recovery_turn(
-                debug,
-                self.blocked_recovery_omega_cmd,
-                "blocked_recovery_scanning_no_gap_yet",
+        params = dict(defaults)
+        try:
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+            group = cfg.get("parameters", cfg).get("controller", {})
+            for key in defaults:
+                if key in group and "default" in group[key]:
+                    params[key] = float(group[key]["default"])
+        except Exception as e:
+            rospy.logwarn(f"[{self.node_name}] Could not load config ({e}); using defaults.")
+        rospy.loginfo(f"[{self.node_name}] params: {params}")
+
+        # The front probe must fit inside the narrowest gap the planner will accept.
+        # Otherwise the duckies forming that gap's edges sit inside the probe while the
+        # bot drives between them, front_block fires on its own walls, and every
+        # acceptable gap is abandoned a frame or two after being committed to.
+        if params["front_slice_half"] >= params["gap_min_width"] / 2.0:
+            rospy.logwarn(
+                f"[{self.node_name}] front_slice_half ({params['front_slice_half']}) >= "
+                f"gap_min_width/2 ({params['gap_min_width'] / 2.0}): the bot will abort "
+                f"every gap it accepts. Lower front_slice_half or raise gap_min_width."
             )
+        return params
 
-        # Falls während des Zurückdrehens kurz kein Ziel sichtbar ist, weiter zur gespeicherten Lücke zurückdrehen.
-        if self.blocked_recovery_phase == "return":
-            return self.apply_blocked_recovery_turn(
-                debug,
-                -self.blocked_recovery_omega_cmd,
-                "blocked_recovery_returning_to_best_gap",
+    # ---- callbacks: cache into the planner ----------------------------------
+    def cb_lane(self, msg):
+        self.planner.update_lane_error(msg.data)
+        self.got_lane = True
+
+    def cb_lane_borders(self, msg):
+        try:
+            data = json.loads(msg.data)
+            # `valid` means "the lane_center/error derived from these two lines is
+            # meaningful", which is false when the lines come back in crossed order.
+            # That does NOT mean the lines weren't seen: per-colour validity is
+            # independent of ordering, and the planner sorts the two positions itself.
+            # Discarding both here (as this used to) threw away a perfectly good
+            # corridor in exactly the skewed pose where it matters most.
+            self.planner.update_lane_borders(
+                rospy.Time.now().to_sec(),
+                data.get("yellow_x", 0.05), data.get("white_x", 0.95),
+                bool(data.get("yellow_valid", True)), bool(data.get("white_valid", True)),
             )
+            self.planner.set_lane_error_trusted(bool(data.get("valid", True)))
+            self.got_borders = True
+        except Exception as e:
+            rospy.logwarn_throttle(1.0, f"[{self.node_name}] bad lane_borders: {e}")
 
-        return debug
+    def cb_obstacles(self, msg):
+        try:
+            data = json.loads(msg.data)
+            duckies = data.get("duckies", [])
+            if not duckies and data.get("detected", False) and str(data.get("class_name", "")).lower() == "duckie":
+                duckies = [data]
+            self.planner.update_duckies(rospy.Time.now().to_sec(), duckies)
+            # duckie_BB arriving at all means YOLO has loaded and is publishing.
+            self.got_duckies = True
+        except Exception as e:
+            rospy.logwarn_throttle(1.0, f"[{self.node_name}] bad duckie_BB: {e}")
 
-    def publish_plan(self, debug):
-        """Publishes the planner debug snapshot, tagged with the drive-command mode.
+    def sensors_ready(self):
+        return self.got_lane and self.got_borders and self.got_duckies
 
-        dry_run rides along on every message because the dashboard otherwise cannot
-        tell the two stationary cases apart: a robot held still by dry run looks
-        exactly like a robot that computed v=0 and is stuck.
-        """
-        debug["dry_run"] = not self.publish_cmd
-        self.pub_debug_plan.publish(String(data=json.dumps(debug)))
-
-    def detectors_ready(self):
-        """True once both detector streams have been seen at least once.
-
-        Latching: this only gates start-up. Once both detectors have spoken the gate
-        stays open, and mid-run dropouts are left to the existing lane_timeout /
-        duckie_hold_time logic, which already degrades gracefully. Re-closing the
-        gate on a dropout would stop the robot dead in the middle of the track on a
-        single missed frame.
-        """
-        if self.startup_gate_open:
-            return True
-
-        if self.lane_stream_alive and self.obstacle_stream_alive:
-            self.startup_gate_open = True
-            rospy.loginfo(
-                f"[{self.node_name}] Both detectors alive - releasing startup gate, "
-                f"driving enabled."
-            )
-            return True
-
-        return False
-
-    def cbFollowLane(self, msg):
-        lane_error = float(msg.data)
-        self.current_lane_error = lane_error
-        self.last_lane_msg_time = rospy.Time.now().to_sec()
-        self.lane_stream_alive = True
-
-        if not self.detectors_ready():
-            self.v = 0.0
-            self.a = 0.0
-            self.last_time = None
-            self.integral = 0.0
-
-            waiting_for = []
-            if not self.lane_stream_alive:
-                waiting_for.append("/detect/lane")
-            if not self.obstacle_stream_alive:
-                waiting_for.append("/detect/duckie_BB")
-
-            rospy.loginfo_throttle(
-                2.0,
-                f"[{self.node_name}] Startup gate closed, holding v=0. "
-                f"Waiting for: {', '.join(waiting_for)}"
-            )
-
-            self.latest_debug = {
-                "avoidance_active": False,
-                "reason": "waiting_for_detectors",
-                "waiting_for": waiting_for,
-                "v": 0.0,
-                "omega": 0.0,
-            }
-            self.publish_plan(self.latest_debug)
-            return
-
-        target_x, debug = self.choose_avoidance_target(lane_error)
-
-        if target_x == "STOP":
-            if debug.get("reason") in ["no_valid_escape_target", "no_free_interval"]:
-                debug = self.handle_no_valid_escape(debug)
-            else:
-                self.v = 0.0
-                self.a = 0.0
-
-            debug["error"] = 0.0
-            debug["v"] = self.v
-            debug["omega"] = self.a
-
-            self.publish_plan(debug)
-            self.latest_debug = debug
-            return
-
-        if self.blocked_recovery_active and target_x is not None:
-            target_x, debug, recovery_done = self.handle_blocked_recovery_candidate(target_x, debug)
-
-            if not recovery_done:
-                debug["error"] = 0.0
-                debug["v"] = self.v
-                debug["omega"] = self.a
-
-                self.publish_plan(debug)
-                self.latest_debug = debug
-                return
-
-            self.reset_blocked_recovery()
-        elif target_x is None:
-            self.reset_blocked_recovery()
-
-        if target_x is None:
-            post_target_x, post_velocity, debug = self.get_post_avoidance_target(lane_error, debug)
-
-            if post_target_x is None:
-                error = lane_error
-                velocity_override = None
-                mode = "lane"
-            else:
-                raw_avoid_error = 1.0 - 2.0 * post_target_x
-                error = max(-1.0, min(1.0, raw_avoid_error * self.avoidance_steering_gain))
-                velocity_override = post_velocity
-                mode = "avoidance"
-        else:
-            raw_avoid_error = 1.0 - 2.0 * target_x
-
-            self.last_avoidance_side = debug.get("avoidance_side")
-            self.last_avoidance_target_x = target_x
-            self.last_avoidance_time = rospy.Time.now().to_sec()
-
-            if self.should_turn_in_place_for_avoidance(raw_avoid_error):
-                debug = self.apply_avoidance_turn_in_place(raw_avoid_error, debug)
-                self.publish_plan(debug)
-                self.latest_debug = debug
-                return
-
-            error = max(-1.0, min(1.0, raw_avoid_error * self.avoidance_steering_gain))
-            velocity_override = self.avoidance_vel
-            mode = "avoidance"
-
-        if mode == "lane":
-            self.reset_avoidance_turn_in_place()
-
-        self.calculate_pid(error, velocity_override=velocity_override, mode=mode)
-
-        debug["error"] = error
-        debug["v"] = self.v
-        debug["omega"] = self.a
-        self.publish_plan(debug)
-        self.latest_debug = debug    
-
-    def fnShutDown(self):
-        if self.pub_cmd_vel is None:
-            rospy.loginfo("Shutting down (dry run). No cmd was ever published.")
-            return
-
-        rospy.loginfo("Shutting down. cmd_vel will be 0")
-        twist = Twist2DStamped(v=0.0, omega=0.0)
-        self.pub_cmd_vel.publish(twist)
-
+    # ---- control loop -------------------------------------------------------
     def run(self):
         rate = rospy.Rate(10)
-
+        announced_ready = False
         while not rospy.is_shutdown():
-            if self.pub_cmd_vel is None:
-                # Dry run: keep the loop alive so callbacks keep firing and the
-                # dashboard keeps updating, but send nothing. self.v/self.a are still
-                # computed and still reported via free_path_plan, so you can watch
-                # what the controller WOULD have commanded.
-                rospy.loginfo_throttle(
-                    5.0,
-                    f"[{self.node_name}] DRY RUN - would command "
-                    f"v={self.v:.3f} omega={self.a:.3f}"
-                )
+            now = rospy.Time.now().to_sec()
+
+            if not self.sensors_ready():
+                # Stay parked (this is the one legitimate v=0/omega=0: not yet armed)
+                # and keep the dashboard informed while the sensing nodes warm up.
+                self.v, self.omega = 0.0, 0.0
+                self.publish_cmd(0.0, 0.0)
+                self.publish_plan({
+                    "state": "WAITING",
+                    "reason": "waiting_for_sensors",
+                    "avoidance_active": False,
+                    "waiting_lane": not self.got_lane,
+                    "waiting_lane_borders": not self.got_borders,
+                    "waiting_duckies": not self.got_duckies,
+                    "v": 0.0, "omega": 0.0,
+                })
                 rate.sleep()
                 continue
 
-            twist = Twist2DStamped()
-            twist.header.stamp = rospy.Time.now()
-            twist.v = self.v
-            twist.omega = self.a
-            self.pub_cmd_vel.publish(twist)
+            if not announced_ready:
+                rospy.loginfo(f"[{self.node_name}] all sensors online; arming controller.")
+                announced_ready = True
+
+            self.v, self.omega, debug = self.planner.step(now)
+            self.publish_cmd(self.v, self.omega)
+            self.publish_plan(debug)
             rate.sleep()
+
+    def publish_plan(self, debug):
+        """Publish the planner snapshot, tagged with the drive-command mode.
+
+        dry_run rides along on every message because the dashboard otherwise cannot
+        tell the two stationary cases apart: a robot held still by dry run looks
+        exactly like one that computed v=0 and is stuck.
+        """
+        debug["dry_run"] = not self.publish_cmd_enabled
+        self.pub_debug.publish(String(data=json.dumps(debug)))
+
+    def publish_cmd(self, v, omega):
+        if self.pub_cmd is None:
+            # Dry run. self.v/self.omega are still set by the caller and still travel
+            # out on free_path_plan, so the dashboard shows what WOULD be commanded.
+            rospy.loginfo_throttle(
+                5.0, f"[{self.node_name}] DRY RUN - would command v={v:.3f} omega={omega:.3f}")
+            return
+        twist = Twist2DStamped()
+        twist.header.stamp = rospy.Time.now()
+        twist.v = v
+        twist.omega = omega
+        self.pub_cmd.publish(twist)
+
+    def shutdown(self):
+        if self.pub_cmd is None:
+            rospy.loginfo(f"[{self.node_name}] shutting down (dry run); nothing was ever commanded.")
+            return
+        rospy.loginfo(f"[{self.node_name}] shutting down; commanding zero velocity.")
+        self.pub_cmd.publish(Twist2DStamped(v=0.0, omega=0.0))
 
 
 if __name__ == "__main__":
