@@ -69,19 +69,19 @@
         "help": "Half-width of the central 'is something in my path' probe, around the column the bot is actually steering toward. Represents the ROBOT'S OWN WIDTH in normalized image x, not a comfort zone. HARD CONSTRAINT: keep it below gap_min_width/2 (currently 0.05). If it is wider, the two duckies forming the edges of an accepted gap fall inside the probe while the bot drives between them, front_block fires on the gap's own walls, and the manoeuvre is abandoned a frame or two after it starts. Was hardcoded at 0.18 against a gap_min_width of 0.1, which made every accepted gap self-aborting. The node warns at startup if this constraint is violated."
       },
       "react_ymax": {
-        "default": 0.6,
+        "default": 0.5,
         "min": 0.0,
         "max": 1.0,
         "help": "Closeness (ymax, bottom-of-frame = closer) a duckie must reach before it counts at all - creates its blocked interval and can trigger avoidance. HIGHER = react closer/later, LOWER = react farther/earlier. This is the knob for 'reacts too early'. Keep it below front_slow_ymax."
       },
       "front_slow_ymax": {
-        "default": 0.72,
+        "default": 0.55,
         "min": 0.0,
         "max": 1.0,
         "help": "Nearest front-duckie ymax where forward speed starts ramping down toward v_min. Keep above react_ymax."
       },
       "front_block_ymax": {
-        "default": 0.88,
+        "default": 0.7,
         "min": 0.0,
         "max": 1.0,
         "help": "Nearest front-duckie ymax where the front is considered blocked (no forward path) -> ESCAPE_ROTATE."
