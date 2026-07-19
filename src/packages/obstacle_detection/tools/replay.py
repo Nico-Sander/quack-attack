@@ -141,6 +141,12 @@ def step_record(t, planner, params, v, omega, dbg, duckies_now):
     # version used the fixed front_slice_half and therefore reported "clear" on a
     # bag that ended in a collision - the same bug this rewrite removes from the
     # planner, reproduced in the tool meant to detect it.
+    # Clearance is tracked in CENTIMETRES, not image fraction. The same image gap
+    # means very different physical clearances at different ranges, so ranking by
+    # image fraction picks the wrong duckie: 0.037 of frame at 61cm is 5.9cm of room,
+    # while 0.044 at 8cm is 0.9cm. Ranking by image width reported the far one as the
+    # closer call and cleared a run that ended in a collision.
+    clearance_cm = None
     clearance = None
     nearest = None
     for d in duckies_now:
@@ -157,7 +163,10 @@ def step_record(t, planner, params, v, omega, dbg, duckies_now):
             gap = xmin - (drive_x + half)
         else:
             gap = -min(xmax - (drive_x - half), (drive_x + half) - xmin)
-        if clearance is None or gap < clearance:
+        dist_cm = ymax_cm(ymax)
+        gap_cm = gap * dist_cm / params["camera_width_k"]
+        if clearance_cm is None or gap_cm < clearance_cm:
+            clearance_cm = gap_cm
             clearance = gap
             nearest = (ymax, xmin, xmax)
 
@@ -177,6 +186,7 @@ def step_record(t, planner, params, v, omega, dbg, duckies_now):
         "n_spans": len(dbg.get("blocked_intervals", [])),
         "lane_source": dbg.get("lane_source", "?"),
         "clearance": round(clearance, 3) if clearance is not None else None,
+        "clear_cm": round(clearance_cm, 1) if clearance_cm is not None else None,
         "near_cm": round(ymax_cm(nearest[0]), 1) if nearest else None,
     }
 
@@ -190,7 +200,7 @@ def is_contact(r, contact_cm):
     image coordinates alone - the same conflation that makes the image-space margin
     parameters untunable.
     """
-    return (r["clearance"] is not None and r["clearance"] < 0
+    return (r["clear_cm"] is not None and r["clear_cm"] < 0
             and r["near_cm"] is not None and r["near_cm"] <= contact_cm)
 
 
@@ -212,12 +222,17 @@ def report(records, label, contact_cm=12.0):
     contacts = [r for r in records if is_contact(r, contact_cm)]
     # In-path but not close: normal, this is what avoidance is for.
     in_path = [r for r in records
-               if r["clearance"] is not None and r["clearance"] < 0
+               if r["clear_cm"] is not None and r["clear_cm"] < 0
                and not is_contact(r, contact_cm)]
+    # Within the calibration's error bars (~30% at close range) a sub-2cm pass is
+    # indistinguishable from a touch, so it is called out separately.
+    grazes = [r for r in records
+              if r["clear_cm"] is not None and 0 <= r["clear_cm"] < 2.0
+              and r["near_cm"] is not None and r["near_cm"] <= contact_cm * 2]
     # Closest approach considering only frames near enough to matter.
     near = [r for r in records
             if r["near_cm"] is not None and r["near_cm"] <= contact_cm * 2.5]
-    worst = min(near, key=lambda r: r["clearance"]) if near else None
+    worst = min(near, key=lambda r: r["clear_cm"]) if near else None
 
     dt = 1.0 / STEP_HZ
     print(f"\n=== {label} ===")
@@ -225,14 +240,16 @@ def report(records, label, contact_cm=12.0):
     for st, n in sorted(states.items(), key=lambda kv: -kv[1]):
         print(f"    {st:16s} {n * dt:6.1f} s  ({100.0 * n / len(records):4.1f}%)")
     print(f"  CONTACT frames (overlap within {contact_cm:.0f}cm): {len(contacts)}")
-    print(f"  in-path but not close (normal avoidance):  {len(in_path)}")
+    print(f"  GRAZE frames  (passed within 2cm):          {len(grazes)}")
+    print(f"  in-path but not close (normal avoidance):   {len(in_path)}")
     if worst:
-        print(f"  closest approach: clearance {worst['clearance']:+.3f} at "
-              f"t={worst['t']}s, duckie ~{worst['near_cm']}cm, "
-              f"state={worst['state']}, gap_w={worst['gap_w']}")
+        print(f"  closest approach: {worst['clear_cm']:+.1f} cm at "
+              f"t={worst['t']}s, duckie ~{worst['near_cm']}cm ahead, "
+              f"state={worst['state']}")
         print(f"                    reason={worst['reason']}")
-    return {"contacts": len(contacts), "in_path": len(in_path), "flips": flips,
-            "worst": worst["clearance"] if worst else None}
+    return {"contacts": len(contacts), "grazes": len(grazes),
+            "in_path": len(in_path), "flips": flips,
+            "worst": worst["clear_cm"] if worst else None}
 
 
 def show_contacts(records, window=6, contact_cm=12.0):
@@ -240,21 +257,21 @@ def show_contacts(records, window=6, contact_cm=12.0):
     if not bad:
         print(f"\nNo contact frames (no overlap within {contact_cm:.0f}cm). "
               f"Showing the closest approach instead.")
-        near = [r for r in records if r["near_cm"] is not None]
+        near = [r for r in records if r["clear_cm"] is not None]
         if not near:
             return
-        first = records.index(min(near, key=lambda r: r["clearance"]))
+        first = records.index(min(near, key=lambda r: r["clear_cm"]))
     else:
         first = bad[0]
     lo, hi = max(0, first - window), min(len(records), first + window)
     print(f"\nFirst overlap at t={records[first]['t']}s - surrounding frames:\n")
-    print(f"{'t':>6} {'state':14} {'drive_x':>8} {'gap_w':>6} {'clear':>7} "
-          f"{'cm':>6} {'v':>6} {'omega':>7}  reason")
-    print("-" * 92)
+    print(f"{'t':>6} {'state':14} {'drive_x':>8} {'gap_w':>6} {'clear_cm':>9} "
+          f"{'dist_cm':>8} {'v':>6} {'omega':>7}  reason")
+    print("-" * 96)
     for r in records[lo:hi]:
         mark = " << CONTACT" if is_contact(r, contact_cm) else ""
         print(f"{r['t']:>6} {r['state']:14} {r['drive_x']:>8} {r['gap_w']:>6} "
-              f"{str(r['clearance']):>7} {str(r['near_cm']):>6} {r['v']:>6} "
+              f"{str(r['clear_cm']):>9} {str(r['near_cm']):>8} {r['v']:>6} "
               f"{r['omega']:>7}  {r['reason']}{mark}")
 
 
@@ -343,12 +360,13 @@ def main():
                          args.contact_cm)
             if res:
                 rows.append((value.strip(), res))
-        print(f"\n{'value':>10} {'CONTACT':>9} {'in-path':>8} {'flips':>7} {'closest':>9}")
-        print("-" * 48)
+        print(f"\n{'value':>10} {'CONTACT':>9} {'GRAZE':>7} {'in-path':>8} "
+              f"{'flips':>7} {'closest cm':>11}")
+        print("-" * 56)
         for value, res in rows:
-            worst = f"{res['worst']:+.3f}" if res["worst"] is not None else "-"
-            print(f"{value:>10} {res['contacts']:>9} {res['in_path']:>8} "
-                  f"{res['flips']:>7} {worst:>9}")
+            worst = f"{res['worst']:+.1f}" if res["worst"] is not None else "-"
+            print(f"{value:>10} {res['contacts']:>9} {res['grazes']:>7} "
+                  f"{res['in_path']:>8} {res['flips']:>7} {worst:>11}")
         return
 
     params = load_params(overrides)
