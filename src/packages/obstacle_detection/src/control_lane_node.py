@@ -94,6 +94,7 @@ class GapPlanner:
         "front_slice_half", "react_ymax", "front_slow_ymax", "front_block_ymax",
         "escape_min_dwell", "avoid_min_dwell", "escape_relax_after",
         "lane_hold_frames", "duckie_hold_time",
+        "yellow_anchor", "white_anchor",
     )
 
     def __init__(self, params):
@@ -107,6 +108,17 @@ class GapPlanner:
         self.left_invalid_streak = 0
         self.right_invalid_streak = 0
         self.last_lane_time = 0.0
+
+        # Colour-identified line state, tracked ALONGSIDE the order-agnostic walls.
+        # The walls deliberately drop colour so a skewed pose still yields a corridor;
+        # but which colour is visible is the robot's only absolute bearing reference
+        # inside the bulb, so it is kept separately rather than thrown away.
+        self.yellow_x = 0.05
+        self.white_x = 0.95
+        self.yellow_seen = False
+        self.white_seen = False
+        self.yellow_invalid_streak = 0
+        self.white_invalid_streak = 0
 
         # Duckie state.
         self.duckies = []            # list of dicts with xmin,xmax,ymax
@@ -180,6 +192,22 @@ class GapPlanner:
 
         self.left_open = self.left_invalid_streak > self.lane_hold_frames
         self.right_open = self.right_invalid_streak > self.lane_hold_frames
+
+        # Same debounce, but keyed on colour rather than on side.
+        if yellow_valid:
+            self.yellow_invalid_streak = 0
+            self.yellow_x = a
+        else:
+            self.yellow_invalid_streak += 1
+        if white_valid:
+            self.white_invalid_streak = 0
+            self.white_x = b
+        else:
+            self.white_invalid_streak += 1
+
+        self.yellow_seen = self.yellow_invalid_streak <= self.lane_hold_frames
+        self.white_seen = self.white_invalid_streak <= self.lane_hold_frames
+
         self.last_lane_time = now
 
     def update_duckies(self, now, duckies_raw):
@@ -286,6 +314,35 @@ class GapPlanner:
         # error positive => center left => small target_x.
         return clamp01((1.0 - self.lane_error) / 2.0)
 
+    def lane_goal_x(self):
+        """Goal column from the markings, using LINE COLOUR as a bearing reference.
+
+        Inside the bulb there is no two-line corridor, but which colour is visible is
+        an absolute orientation cue: white is the outer boundary, yellow the inner
+        centre line. Seeing only white means facing outward, so aim left of it; seeing
+        only yellow means facing inward, so aim right of it. That cue is the only
+        heading reference that survives an ESCAPE_ROTATE, which is why the one-line
+        case is steered from the marking rather than collapsed into heading_bias.
+
+        The missing line is replaced by an ANCHOR - an assumption about where it would
+        have been. Those anchors used to be hidden inside detect_lane_node's fallback
+        constants, which made the U-turn radius an accident of the detector instead of
+        something tunable. Defaults reproduce the previous numbers exactly, so this is
+        a refactor first and a tuning surface second.
+
+        Returns None only when neither line is visible. That is the genuinely blind
+        case heading_bias exists for, and on this course it is reachable: duckies
+        sitting over both markings get erased from the segmentation mask.
+        """
+        if self.yellow_seen and self.white_seen:
+            # Midpoint is order-agnostic, so a crossed/skewed pose is still usable.
+            return clamp01((self.yellow_x + self.white_x) / 2.0)
+        if self.white_seen:
+            return clamp01((self.white_x + self.yellow_anchor) / 2.0)
+        if self.yellow_seen:
+            return clamp01((self.yellow_x + self.white_anchor) / 2.0)
+        return None
+
     # ---- main step ----------------------------------------------------------
     def step(self, now):
         left, right, left_open, right_open = self.corridor(now)
@@ -299,10 +356,18 @@ class GapPlanner:
         # the U-turn (left). Note this is gated on lane_error_trusted SEPARATELY from
         # the corridor: with the lines detected but in crossed order we fall back to
         # the heading bias for the goal, while still honouring the corridor below.
-        if lines_valid and self.lane_error_trusted:
-            goal_x = clamp(self.lane_target_x(), left, right)
+        # Goal column. Driven by the markings whenever ANY line is visible - including
+        # the one-line case, where the colour carries the bearing. heading_bias is the
+        # last resort, for when both markings are gone.
+        lane_goal = self.lane_goal_x() if self.lane_fresh(now) else None
+        if lane_goal is not None:
+            goal_x = clamp(lane_goal, left, right)
+            goal_source = ("lane_two_line" if (self.yellow_seen and self.white_seen)
+                           else "lane_white_only" if self.white_seen
+                           else "lane_yellow_only")
         else:
             goal_x = self.heading_bias(left, right)
+            goal_source = "heading_bias_blind"
 
         # Escape relaxation: after rotating a while with no gap, progressively shrink
         # both the required gap width and the duckie inflation so a marginal gap opens.
@@ -400,7 +465,7 @@ class GapPlanner:
         debug = self.build_debug(
             now, left, right, left_open, right_open, spans, frees,
             best_gap, goal_x, target_x, front, reason, v, omega,
-            drive_x, committed, passable,
+            drive_x, committed, passable, goal_source,
         )
         return v, omega, debug
 
@@ -510,7 +575,7 @@ class GapPlanner:
 
     def build_debug(self, now, left, right, left_open, right_open, spans, frees,
                     best_gap, goal_x, target_x, front, reason, v, omega,
-                    drive_x, committed, passable):
+                    drive_x, committed, passable, goal_source="unknown"):
         return {
             "state": self.state,
             "reason": reason,
@@ -535,7 +600,9 @@ class GapPlanner:
             "num_active_duckies": len(self.active_duckies(now)),
             "num_relevant_duckies": len(spans),
             "num_small_duckies_filtered": self.small_duckie_count,
-            "lane_source": "lane_borders" if self.lane_fresh(now) else "stale_open",
+            "lane_source": goal_source,
+            "yellow_seen": self.yellow_seen,
+            "white_seen": self.white_seen,
             "lane_error_trusted": self.lane_error_trusted,
             "left_invalid_streak": self.left_invalid_streak,
             "right_invalid_streak": self.right_invalid_streak,
@@ -644,6 +711,7 @@ class ControlLaneNode:
             "escape_min_dwell": 0.5, "escape_relax_after": 2.0,
             "lane_hold_frames": 12, "duckie_hold_time": 1.0,
             "avoid_min_dwell": 0.8, "front_slice_half": 0.04,
+            "yellow_anchor": 0.047, "white_anchor": 0.948,
         }
         params = dict(defaults)
         try:

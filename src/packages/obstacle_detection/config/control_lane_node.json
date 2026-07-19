@@ -115,6 +115,18 @@
         "min": 0.0,
         "max": 10.0,
         "help": "After rotating this long with no passable gap, progressively relax gap_min_width and inflation until a gap opens (anti-permanent-freeze)."
+      },
+      "yellow_anchor": {
+        "default": 0.047,
+        "min": 0.0,
+        "max": 0.5,
+        "help": "Assumed x of the yellow line when only WHITE is visible - i.e. mid-U-turn, facing the outer wall. The goal column becomes (white_x + yellow_anchor)/2, so this sets how far left of the wall the bot aims, and therefore the U-turn radius. Lower = tighter turn. Was hidden in detect_lane_node's fallback constant."
+      },
+      "white_anchor": {
+        "default": 0.948,
+        "min": 0.5,
+        "max": 1.0,
+        "help": "Assumed x of the white line when only YELLOW is visible - i.e. entering the bulb with the entry lane's centre line still in view. Goal becomes (yellow_x + white_anchor)/2. Higher = steers further right of the yellow line. Was hidden in detect_lane_node's fallback constant."
       }
     }
   }
