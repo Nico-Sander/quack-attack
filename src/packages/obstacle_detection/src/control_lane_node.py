@@ -60,6 +60,36 @@ GAP_STICKY_BONUS = 0.06    # width bonus for the gap we are already driving into
 CLEAR_HOLD_TIME = 0.6      # s the road must stay clear before AVOID falls back to CRUISE
 EPS = 1e-3
 
+# Measured on the course: bbox-bottom ymax -> distance from the robot's front, cm.
+# Apparent width obeys width_image = width_cm * camera_width_k / distance_cm, so a
+# fixed image-space width is correct at exactly ONE distance. That is what made the
+# old front_slice_half / duckie_margin_* untunable: at 8 cm the robot's own body is
+# 6x wider in the image than at 52 cm, so a constant is either too timid far away or
+# a collision up close.
+YMAX_TO_CM = ((0.462, 120.0), (0.470, 100.0), (0.503, 70.0), (0.545, 50.0),
+              (0.638, 30.0), (0.823, 15.0), (1.000, 8.0))
+# Detection dies at ~4 cm; clamp above that so the 1/d conversion cannot explode.
+MIN_RANGE_CM = 6.0
+
+
+def robot_half_image_static(robot_width_cm, camera_width_k, dist_cm):
+    """Module-level twin of GapPlanner.robot_half_image, for offline tooling."""
+    return (robot_width_cm / 2.0) * camera_width_k / max(dist_cm, MIN_RANGE_CM)
+
+
+def ymax_to_cm(ymax):
+    """Interpolate the measured range curve. Outside it, clamp to the ends."""
+    if ymax <= YMAX_TO_CM[0][0]:
+        return YMAX_TO_CM[0][1]
+    if ymax >= YMAX_TO_CM[-1][0]:
+        return YMAX_TO_CM[-1][1]
+    for (y0, d0), (y1, d1) in zip(YMAX_TO_CM, YMAX_TO_CM[1:]):
+        if y0 <= ymax <= y1:
+            f = (ymax - y0) / (y1 - y0) if y1 > y0 else 0.0
+            return d0 + f * (d1 - d0)
+    return YMAX_TO_CM[-1][1]
+
+
 # Minimum duckie box size (normalized) to reject YOLO noise / far specks.
 MIN_DUCKIE_WIDTH = 0.04
 MIN_DUCKIE_HEIGHT = 0.04
@@ -90,8 +120,8 @@ class GapPlanner:
     # parameter means touching this tuple and the JSON - nothing else.
     TUNABLES = (
         "v_cruise", "v_avoid", "v_min", "k_steer", "omega_rotate", "omega_max",
-        "lane_margin", "duckie_margin_base", "duckie_margin_gain", "gap_min_width",
-        "front_slice_half", "react_ymax", "front_slow_ymax", "front_block_ymax",
+        "lane_margin", "camera_width_k", "robot_width_cm", "safety_margin_cm",
+        "gap_min_cm", "react_ymax", "front_slow_ymax", "front_block_ymax",
         "escape_min_dwell", "avoid_min_dwell", "escape_relax_after",
         "lane_hold_frames", "duckie_hold_time",
         "yellow_anchor", "white_anchor",
@@ -157,6 +187,21 @@ class GapPlanner:
         # live here rather than at the call site - a live edit could otherwise set a
         # rotation rate that only buzzes the motors without turning the robot.
         self.omega_rotate = max(self.omega_rotate, MIN_ESCAPE_OMEGA)
+
+    def cm_to_image(self, cm, dist_cm):
+        """Physical size in cm -> width in normalized image x, at that range.
+
+        The whole point of the rewrite: perspective means apparent size scales as
+        1/distance, so every lateral margin has to be computed at the range of the
+        thing it applies to. Calibrated by camera_width_k, which is measured -
+        apparent_width x distance was constant at ~1.91 across a 68->8 cm approach,
+        and dividing by the duckie's real 5 cm width gives k.
+        """
+        return cm * self.camera_width_k / max(dist_cm, MIN_RANGE_CM)
+
+    def robot_half_image(self, dist_cm):
+        """The robot's own half-width in image x, at a given range."""
+        return self.cm_to_image(self.robot_width_cm / 2.0, dist_cm)
 
     # ---- sensor setters -----------------------------------------------------
     def update_lane_error(self, error):
@@ -266,8 +311,12 @@ class GapPlanner:
         """
         spans = []
         for d in self.active_duckies(now):
-            proximity = clamp01(d["ymax"])
-            inflate = (self.duckie_margin_base + self.duckie_margin_gain * proximity) * relax
+            # Inflate by everything that must NOT overlap the duckie: half the robot,
+            # plus the clearance we want to keep. The result is the set of columns the
+            # robot's CENTRE may not occupy, computed at this duckie's actual range.
+            dist_cm = ymax_to_cm(d["ymax"])
+            inflate = self.cm_to_image(
+                self.robot_width_cm / 2.0 + self.safety_margin_cm, dist_cm) * relax
             lo = max(left, d["xmin"] - inflate)
             hi = min(right, d["xmax"] + inflate)
             if hi > lo:
@@ -297,16 +346,16 @@ class GapPlanner:
         """Closeness of the nearest duckie whose span overlaps the front slice.
 
         The slice represents the robot's own width around the column it is driving
-        toward - "is something in my path", not "is something near me". It must stay
-        narrower than half the minimum gap (see front_slice_half), or the duckies
-        forming a gap's edges register as being ahead while we drive between them and
-        the manoeuvre aborts on its own walls.
+        toward - "is something in my path", not "is something near me". Its width is
+        computed at each duckie's range, so it widens correctly as one approaches.
         """
-        lo = probe_x - self.front_slice_half
-        hi = probe_x + self.front_slice_half
         worst = 0.0
         for d in self.active_duckies(now):
-            if d["xmax"] >= lo and d["xmin"] <= hi:
+            # Probe half-width is evaluated per duckie, at ITS range - a fixed slice
+            # is far too narrow up close, which is how a duckie 8 cm ahead registered
+            # as "not in my path" while the robot drove into it.
+            half = self.robot_half_image(ymax_to_cm(d["ymax"]))
+            if d["xmax"] >= probe_x - half and d["xmin"] <= probe_x + half:
                 worst = max(worst, d["ymax"])
         return worst
 
@@ -380,7 +429,13 @@ class GapPlanner:
 
         spans = self.blocked_spans(now, left, right, relax)
         frees = self.free_intervals(left, right, spans)
-        gap_min = self.gap_min_width * relax
+        # Minimum gap, in cm of lateral wiggle room for the robot's centre, converted
+        # at the range of the nearest duckie that is actually constraining us. The
+        # robot's own width is already inside the inflation above, so this is control
+        # slack only, not clearance.
+        nearest_cm = min((ymax_to_cm(d["ymax"]) for d in self.active_duckies(now)),
+                         default=YMAX_TO_CM[0][1])
+        gap_min = self.cm_to_image(self.gap_min_cm, nearest_cm) * relax
 
         best_gap = self.pick_gap(frees, goal_x)
         best_width = (best_gap[1] - best_gap[0]) if best_gap else 0.0
@@ -686,12 +741,6 @@ class ControlLaneNode:
         # constraint a slider session is likely to break, and the symptom (every
         # accepted gap aborts a frame or two in) looks like a tuning problem rather
         # than an invalid combination.
-        if config["front_slice_half"] >= config["gap_min_width"] / 2.0:
-            rospy.logwarn(
-                f"[{self.node_name}] front_slice_half ({config['front_slice_half']}) >= "
-                f"gap_min_width/2 ({config['gap_min_width'] / 2.0}): the bot will abort "
-                f"every gap it accepts. Lower front_slice_half or raise gap_min_width."
-            )
         if config["react_ymax"] >= config["front_slow_ymax"]:
             rospy.logwarn(
                 f"[{self.node_name}] react_ymax ({config['react_ymax']}) >= front_slow_ymax "
@@ -706,11 +755,12 @@ class ControlLaneNode:
         defaults = {
             "v_cruise": 0.10, "v_avoid": 0.06, "v_min": 0.06, "k_steer": 6.0,
             "omega_rotate": 3.0, "omega_max": 4.0, "lane_margin": 0.08,
-            "duckie_margin_base": 0.06, "duckie_margin_gain": 0.12, "gap_min_width": 0.16,
+            "camera_width_k": 0.382, "robot_width_cm": 13.0,
+            "safety_margin_cm": 5.0, "gap_min_cm": 4.0,
             "react_ymax": 0.62, "front_slow_ymax": 0.72, "front_block_ymax": 0.88,
             "escape_min_dwell": 0.5, "escape_relax_after": 2.0,
             "lane_hold_frames": 12, "duckie_hold_time": 1.0,
-            "avoid_min_dwell": 0.8, "front_slice_half": 0.04,
+            "avoid_min_dwell": 0.8,
             "yellow_anchor": 0.047, "white_anchor": 0.948,
         }
         params = dict(defaults)
@@ -725,15 +775,15 @@ class ControlLaneNode:
             rospy.logwarn(f"[{self.node_name}] Could not load config ({e}); using defaults.")
         rospy.loginfo(f"[{self.node_name}] params: {params}")
 
-        # The front probe must fit inside the narrowest gap the planner will accept.
-        # Otherwise the duckies forming that gap's edges sit inside the probe while the
-        # bot drives between them, front_block fires on its own walls, and every
-        # acceptable gap is abandoned a frame or two after being committed to.
-        if params["front_slice_half"] >= params["gap_min_width"] / 2.0:
+        # Sanity: at contact range the robot fills a large part of the frame, so a
+        # badly wrong camera_width_k silently reproduces the old failure.
+        half_8cm = params["robot_width_cm"] / 2.0 * params["camera_width_k"] / 8.0
+        if not 0.15 <= half_8cm <= 0.45:
             rospy.logwarn(
-                f"[{self.node_name}] front_slice_half ({params['front_slice_half']}) >= "
-                f"gap_min_width/2 ({params['gap_min_width'] / 2.0}): the bot will abort "
-                f"every gap it accepts. Lower front_slice_half or raise gap_min_width."
+                f"[{self.node_name}] robot half-width at 8cm computes to {half_8cm:.3f} "
+                f"of the frame, which looks wrong (expected ~0.2-0.35). Check "
+                f"camera_width_k ({params['camera_width_k']}) and robot_width_cm "
+                f"({params['robot_width_cm']})."
             )
         return params
 

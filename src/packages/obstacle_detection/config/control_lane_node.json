@@ -3,7 +3,7 @@
   "parameters": {
     "controller": {
       "v_cruise": {
-        "default": 0.10,
+        "default": 0.1,
         "min": 0.0,
         "max": 0.3,
         "help": "Forward speed with a clear road (lane following)."
@@ -43,30 +43,6 @@
         "min": 0.0,
         "max": 0.3,
         "help": "Hard inset from each detected line. The steerable corridor is [left_wall+margin, right_wall-margin]."
-      },
-      "duckie_margin_base": {
-        "default": 0.04,
-        "min": 0.0,
-        "max": 0.3,
-        "help": "Lateral inflation added to each side of a far duckie's box."
-      },
-      "duckie_margin_gain": {
-        "default": 0.1,
-        "min": 0.0,
-        "max": 0.5,
-        "help": "Extra lateral inflation added proportional to proximity (ymax). A close duckie is inflated by base + gain."
-      },
-      "gap_min_width": {
-        "default": 0.21,
-        "min": 0.02,
-        "max": 0.6,
-        "help": "Minimum normalized width of a free interval to count as passable. Below this, the controller rotates to escape."
-      },
-      "front_slice_half": {
-        "default": 0.04,
-        "min": 0.01,
-        "max": 0.3,
-        "help": "Half-width of the central 'is something in my path' probe, around the column the bot is actually steering toward. Represents the ROBOT'S OWN WIDTH in normalized image x, not a comfort zone. HARD CONSTRAINT: keep it below gap_min_width/2 (currently 0.05). If it is wider, the two duckies forming the edges of an accepted gap fall inside the probe while the bot drives between them, front_block fires on the gap's own walls, and the manoeuvre is abandoned a frame or two after it starts. Was hardcoded at 0.18 against a gap_min_width of 0.1, which made every accepted gap self-aborting. The node warns at startup if this constraint is violated."
       },
       "react_ymax": {
         "default": 0.5,
@@ -127,6 +103,30 @@
         "min": 0.5,
         "max": 1.0,
         "help": "Assumed x of the white line when only YELLOW is visible - i.e. entering the bulb with the entry lane's centre line still in view. Goal becomes (yellow_x + white_anchor)/2. Higher = steers further right of the yellow line. Was hidden in detect_lane_node's fallback constant."
+      },
+      "camera_width_k": {
+        "default": 0.382,
+        "min": 0.1,
+        "max": 1.0,
+        "help": "MEASURED, not tuned. Converts physical cm to normalized image width at range: width_image = cm * camera_width_k / distance_cm. Derived from the course data - apparent width x distance was constant at ~1.91 over a 68->8cm approach, divided by the duckie's real 5cm width. Re-measure only if the camera or its lens changes."
+      },
+      "robot_width_cm": {
+        "default": 13.0,
+        "min": 5.0,
+        "max": 40.0,
+        "help": "MEASURED, not tuned. Robot width at its widest point. Half of this is what must clear every obstacle, and it is what the front probe represents."
+      },
+      "safety_margin_cm": {
+        "default": 5.0,
+        "min": 0.0,
+        "max": 30.0,
+        "help": "How much clearance to leave when passing an obstacle, in cm - the real tuning knob. Each duckie is inflated by (robot_width_cm/2 + safety_margin_cm) converted at ITS range, so this stays correct at every distance. Raise if it clips duckies, lower if it refuses gaps it could take."
+      },
+      "gap_min_cm": {
+        "default": 4.0,
+        "min": 0.0,
+        "max": 30.0,
+        "help": "Extra lateral wiggle room required for the robot's CENTRE before a gap counts as passable, in cm. The robot's own width is already in the inflation, so this is control slack only - cover for steering error, not clearance. Raise if it commits to gaps it cannot hold a line through."
       }
     }
   }

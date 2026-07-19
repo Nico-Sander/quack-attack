@@ -134,10 +134,13 @@ def replay(events, params):
 def step_record(t, planner, params, v, omega, dbg, duckies_now):
     """One replayed step, plus the clearance analysis that motivates all this."""
     drive_x = dbg.get("front_probe_x", 0.5)
-    half = params["front_slice_half"]
 
     # Clearance between the robot's own footprint and the nearest RAW detection -
     # raw, not inflated, because the question is whether it would physically touch.
+    # The footprint half-width is evaluated at each duckie's RANGE. An earlier
+    # version used the fixed front_slice_half and therefore reported "clear" on a
+    # bag that ended in a collision - the same bug this rewrite removes from the
+    # planner, reproduced in the tool meant to detect it.
     clearance = None
     nearest = None
     for d in duckies_now:
@@ -146,6 +149,8 @@ def step_record(t, planner, params, v, omega, dbg, duckies_now):
             ymax = float(d["ymax"])
         except (KeyError, TypeError, ValueError):
             continue
+        half = cln.robot_half_image_static(
+            params["robot_width_cm"], params["camera_width_k"], ymax_cm(ymax))
         if xmax < drive_x - half:
             gap = (drive_x - half) - xmax
         elif xmin > drive_x + half:
