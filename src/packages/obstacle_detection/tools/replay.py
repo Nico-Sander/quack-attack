@@ -253,6 +253,55 @@ def show_contacts(records, window=6, contact_cm=12.0):
               f"{r['omega']:>7}  {r['reason']}{mark}")
 
 
+def detections_report(events):
+    """Summarise the RAW detection stream, independent of the planner.
+
+    Motivation: if the robot touches a duckie the planner never saw, no parameter
+    can help - the failure is upstream. This shows what the detector actually
+    delivered, so "the planner chose badly" can be told apart from "the planner
+    was blind".
+    """
+    ducks = [e for e in events if e["kind"] == "duckie_BB"]
+    if not ducks:
+        print("no duckie_BB messages in the export")
+        return
+
+    seen = []
+    for e in ducks:
+        for d in e["data"].get("duckies", []):
+            try:
+                seen.append((e["t"], float(d["ymax"]), float(d["xmin"]), float(d["xmax"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    print(f"\nduckie_BB messages : {len(ducks)}")
+    print(f"frames with >=1 duckie: {sum(1 for e in ducks if e['data'].get('duckies'))}")
+    print(f"individual detections : {len(seen)}")
+    if not seen:
+        return
+    ymax_max = max(s[1] for s in seen)
+    print(f"closest detection ever: ymax={ymax_max:.3f}  (~{ymax_cm(ymax_max):.0f} cm)")
+    print(f"  -> if that is far from contact range, the duckie left the frame "
+          f"before impact")
+
+    print("\n  t(s)  n  max_ymax   ~cm   x-span of closest")
+    print("  " + "-" * 46)
+    end = events[-1]["t"]
+    bucket = 0.5
+    t = 0.0
+    while t <= end:
+        window = [s for s in seen if t <= s[0] < t + bucket]
+        n_msg = sum(1 for e in ducks if t <= e["t"] < t + bucket)
+        if n_msg:
+            if window:
+                best = max(window, key=lambda s: s[1])
+                print(f"  {t:5.1f} {len(window):2d}   {best[1]:6.3f} {ymax_cm(best[1]):5.0f}   "
+                      f"[{best[2]:.2f},{best[3]:.2f}]")
+            else:
+                print(f"  {t:5.1f}  0        -     -   (nothing detected)")
+        t += bucket
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("events", help="jsonl from bag_export.py")
@@ -260,6 +309,8 @@ def main():
     ap.add_argument("--sweep", metavar="K=V1,V2,...")
     ap.add_argument("--contact-cm", type=float, default=12.0,
                     help="distance below which a lateral overlap counts as a hit")
+    ap.add_argument("--detections", action="store_true",
+                    help="summarise the raw detector stream, independent of the planner")
     ap.add_argument("--contact", action="store_true",
                     help="show frames around the first footprint overlap")
     args = ap.parse_args()
@@ -272,6 +323,10 @@ def main():
     events = load_events(args.events)
     if not events:
         raise SystemExit("no events")
+
+    if args.detections:
+        detections_report(events)
+        return
 
     if args.sweep:
         key, _, values = args.sweep.partition("=")
