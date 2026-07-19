@@ -2,8 +2,12 @@
 
 # Configuration
 TARGET_SSID="DuckieNetz"
-VEHICLE_NAME="track"
-VEHICLE_DOMAIN=".lan"
+# Override per-run without editing this file: ./start.sh dorette
+VEHICLE_NAME="${1:-track}"
+# .local is the mDNS name the bot announces itself under, so it always tracks
+# the current DHCP lease. .lan comes from the router's DHCP-DNS, which keeps
+# serving records for leases that have already been handed to another bot.
+VEHICLE_DOMAIN=".local"
 
 echo "=========================================="
 echo " 🦆 Pre-flight Check: Duckiebot Network   "
@@ -50,10 +54,26 @@ else
     echo "✅ Network check passed. Connected to $TARGET_SSID."
 fi
 
-# 2. Automatically find the Duckiebot IP
+# 2. Clear any stale pin for this vehicle BEFORE resolving.
+# /etc/hosts is consulted ahead of mDNS (see `hosts:` in /etc/nsswitch.conf), so
+# a leftover entry from an earlier run silently shadows the live mDNS answer and
+# the lookup below would just read back a dead IP this script wrote itself.
+if grep -qE "[[:space:]]$VEHICLE_NAME(\.|[[:space:]]|$)" /etc/hosts; then
+    echo "🧹 Removing stale /etc/hosts pin for '$VEHICLE_NAME' (it shadows mDNS)..."
+    echo "   (You may be prompted for your sudo password)"
+    sudo sed -i.bak -E "/[[:space:]]$VEHICLE_NAME(\.|[[:space:]]|$)/d" /etc/hosts
+fi
+
+# 3. Automatically find the Duckiebot IP
 echo "🔍 Locating Duckiebot ($VEHICLE_NAME$VEHICLE_DOMAIN)..."
 
-DUCKIEBOT_IP=$(getent ahosts $VEHICLE_NAME$VEHICLE_DOMAIN | awk '{ print $1 }' | head -n 1)
+# avahi-resolve queries mDNS directly and ignores /etc/hosts entirely; getent is
+# the fallback and is safe now that the pin above is gone.
+if command -v avahi-resolve >/dev/null 2>&1; then
+    DUCKIEBOT_IP=$(avahi-resolve -4 -n "$VEHICLE_NAME$VEHICLE_DOMAIN" 2>/dev/null | awk '{print $2}')
+else
+    DUCKIEBOT_IP=$(getent ahosts $VEHICLE_NAME$VEHICLE_DOMAIN | awk '/STREAM/{print $1; exit}')
+fi
 
 if [ -z "$DUCKIEBOT_IP" ]; then
     echo "⚠️ Fast DNS resolution failed. Identifying local subnet for scanning..."
@@ -68,10 +88,14 @@ if [ -z "$DUCKIEBOT_IP" ]; then
     SUBNET=$(ip route show dev $WIFI_IFACE | awk '/proto kernel/ {print $1}')
 
     echo "📡 Engaging nmap scan on subnet $SUBNET..."
-    DUCKIEBOT_IP=$(nmap -sn $SUBNET | grep "$VEHICLE_NAME$VEHICLE_DOMAIN" -A 1 | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b")
+    # nmap reverse-resolves via the router, which answers with .lan (not .local),
+    # so match the bare vehicle name. The IP is on the same line as the name.
+    DUCKIEBOT_IP=$(nmap -sn $SUBNET \
+        | grep -E "Nmap scan report for $VEHICLE_NAME(\.|[[:space:]]|\()" \
+        | grep -oE "([0-9]{1,3}\.){3}[0-9]{1,3}" | head -n 1)
 fi
 
-# 3. Hard Abort if Duckiebot is unreachable
+# 4. Hard Abort if Duckiebot is unreachable
 if [ -z "$DUCKIEBOT_IP" ]; then
     echo "💥 ERROR: Could not locate Duckiebot ($VEHICLE_NAME$VEHICLE_DOMAIN) on the network."
     echo "   Ensure the Duckiebot is powered on, booted up, and connected to '$TARGET_SSID'."
@@ -89,37 +113,43 @@ if [ -z "$HOST_IP" ]; then
 fi
 echo "✅ Host IP identified as $HOST_IP"
 
-# 5. Bulletproof Hostname Resolution
+# 5. Verify Hostname Resolution
 echo "=========================================="
-echo " 🔧 Configuring Hostname Resolution...    "
+echo " 🔧 Verifying Hostname Resolution...      "
 echo "=========================================="
-# ROS 1 nodes on the Jetson Nano register with their hostname (usually .local)
-# Since we use network_mode: "host", the Host PC must resolve these names.
+# ROS 1 nodes on the Jetson Nano register with their hostname (<vehicle>.local),
+# so both the host (network_mode: "host") and the container must resolve it.
+#
+# We deliberately do NOT write this mapping into /etc/hosts. A static pin is read
+# ahead of mDNS, so it outlives the DHCP lease it was based on and then shadows
+# the correct answer - which is what silently broke ssh and ROS_MASTER_URI on any
+# bot whose lease had moved. avahi already resolves .local dynamically; we only
+# confirm it agrees with the IP we just discovered.
+RESOLVED_IP=$(getent ahosts "$VEHICLE_NAME.local" | awk '/STREAM/{print $1; exit}')
 
-# Check if the exact mapping already exists for the current IP
-if ! grep -q "^$DUCKIEBOT_IP.*$VEHICLE_NAME\.local" /etc/hosts; then
-    echo "⚠️  Missing or outdated hostname mapping in /etc/hosts."
-    echo "   ROS requires this for peer-to-peer topic subscriptions."
-    echo "   Updating entry to: $DUCKIEBOT_IP $VEHICLE_NAME $VEHICLE_NAME.local $VEHICLE_NAME.lan"
-    echo "   (You may be prompted for your sudo password)"
-
-    # Safely remove any stale IP mappings for this specific vehicle to prevent conflicts
-    sudo sed -i.bak "/ $VEHICLE_NAME/d" /etc/hosts
-
-    # Append the newly discovered IP and hostnames
-    echo "$DUCKIEBOT_IP $VEHICLE_NAME $VEHICLE_NAME.local $VEHICLE_NAME.lan" | sudo tee -a /etc/hosts >/dev/null
-
-    echo "✅ Hostname mapped successfully."
+if [ "$RESOLVED_IP" = "$DUCKIEBOT_IP" ]; then
+    echo "✅ $VEHICLE_NAME.local resolves to $DUCKIEBOT_IP via mDNS."
+elif [ -z "$RESOLVED_IP" ]; then
+    echo "⚠️  Host cannot resolve $VEHICLE_NAME.local (is avahi-daemon running?)."
+    echo "   ROS peer-to-peer topic subscriptions will fail on the host."
+    echo "   Check with: systemctl status avahi-daemon"
 else
-    echo "✅ Hostname mapping is already correct."
+    echo "⚠️  $VEHICLE_NAME.local resolves to $RESOLVED_IP but the bot is at $DUCKIEBOT_IP."
+    echo "   Something is still shadowing mDNS - check /etc/hosts for a leftover entry."
 fi
 
-# 5. Export variables to the shell environment
+# 6. Export variables to the shell environment
 export DUCKIEBOT_IP=$DUCKIEBOT_IP
 export HOST_IP=$HOST_IP
 export VEHICLE_NAME=$VEHICLE_NAME
 
-# 6. Launch Docker Compose
+# So the container runs as you, not root - otherwise every file it writes
+# into the bind-mounted repo (calibration yaml, build/, devel/) comes out
+# root-owned and you need `sudo chown` before you can touch it again.
+export HOST_UID=$(id -u)
+export HOST_GID=$(id -g)
+
+# 7. Launch Docker Compose
 echo "=========================================="
 echo " 🔎 Verifying Docker Configuration...     "
 echo "=========================================="
@@ -127,6 +157,7 @@ echo "The shell environment currently holds:"
 echo " -> DUCKIEBOT_IP: $DUCKIEBOT_IP"
 echo " -> HOST_IP: $HOST_IP"
 echo " -> VEHICLE_NAME: $VEHICLE_NAME"
+echo " -> HOST_UID:HOST_GID: $HOST_UID:$HOST_GID"
 echo ""
 echo "Here is what Docker Compose will actually use for the ROS Master and IPs:"
 
