@@ -35,6 +35,16 @@ import rospy
 from std_msgs.msg import Float64, String
 from duckietown_msgs.msg import Twist2DStamped
 
+# Live tuning is a convenience, not a requirement. If the package has not been
+# rebuilt since the cfg was added (or dynamic_reconfigure is missing), the node
+# still runs on the JSON values instead of refusing to start mid-session.
+try:
+    from dynamic_reconfigure.server import Server
+    from obstacle_detection.cfg import ControlLaneConfig
+    DYNAMIC_RECONFIGURE = True
+except Exception:
+    DYNAMIC_RECONFIGURE = False
+
 
 # --- Hardcoded geometry / debounce constants (not worth exposing as tunables) ---
 # The top of the planning band is the tunable `react_ymax`; PLAN_Y_MAX is the bottom.
@@ -76,29 +86,18 @@ class GapPlanner:
     ``update_*`` setters. ``step(now)`` returns the command and a debug dict.
     """
 
+    # Every tunable, in one place. set_params() is driven from here, so adding a
+    # parameter means touching this tuple and the JSON - nothing else.
+    TUNABLES = (
+        "v_cruise", "v_avoid", "v_min", "k_steer", "omega_rotate", "omega_max",
+        "lane_margin", "duckie_margin_base", "duckie_margin_gain", "gap_min_width",
+        "front_slice_half", "react_ymax", "front_slow_ymax", "front_block_ymax",
+        "escape_min_dwell", "avoid_min_dwell", "escape_relax_after",
+        "lane_hold_frames", "duckie_hold_time",
+    )
+
     def __init__(self, params):
-        p = params
-        self.v_cruise = p["v_cruise"]
-        self.v_avoid = p["v_avoid"]
-        self.v_min = p["v_min"]
-        self.k_steer = p["k_steer"]
-        # Clamped so the never-freeze guard can use this value directly instead of
-        # carrying its own hardcoded floor (the two used to disagree).
-        self.omega_rotate = max(p["omega_rotate"], MIN_ESCAPE_OMEGA)
-        self.omega_max = p["omega_max"]
-        self.lane_margin = p["lane_margin"]
-        self.duckie_margin_base = p["duckie_margin_base"]
-        self.duckie_margin_gain = p["duckie_margin_gain"]
-        self.gap_min_width = p["gap_min_width"]
-        self.front_slice_half = p["front_slice_half"]
-        self.react_ymax = p["react_ymax"]
-        self.front_slow_ymax = p["front_slow_ymax"]
-        self.front_block_ymax = p["front_block_ymax"]
-        self.escape_min_dwell = p["escape_min_dwell"]
-        self.avoid_min_dwell = p["avoid_min_dwell"]
-        self.escape_relax_after = p["escape_relax_after"]
-        self.lane_hold_frames = p["lane_hold_frames"]
-        self.duckie_hold_time = p["duckie_hold_time"]
+        self.set_params(params)
 
         # Lane-border state.
         self.left_wall = 0.05        # last-known left wall x (order-agnostic)
@@ -129,6 +128,23 @@ class GapPlanner:
         self.avoid_side = 0.0        # sign of last avoid steer (for hysteresis)
         self.clear_since = None      # when the road first became clear (for CLEAR_HOLD)
         self.last_target_x = 0.5
+
+    def set_params(self, params):
+        """(Re)apply the tunables. Safe to call while driving.
+
+        Deliberately touches ONLY the tunables - never the FSM state, the wall
+        estimates or the duckie cache. A live parameter change during a manoeuvre
+        must not teleport the planner back to CRUISE or forget the duckie it is
+        currently steering around.
+        """
+        for name in self.TUNABLES:
+            if name in params:
+                setattr(self, name, float(params[name]))
+
+        # The never-freeze guard commands omega_rotate directly, so the floor has to
+        # live here rather than at the call site - a live edit could otherwise set a
+        # rotation rate that only buzzes the motors without turning the robot.
+        self.omega_rotate = max(self.omega_rotate, MIN_ESCAPE_OMEGA)
 
     # ---- sensor setters -----------------------------------------------------
     def update_lane_error(self, error):
@@ -568,8 +584,54 @@ class ControlLaneNode:
         rospy.Subscriber(f"{base}/detect/lane_borders", String, self.cb_lane_borders, queue_size=1)
         rospy.Subscriber(f"{base}/detect/duckie_BB", String, self.cb_obstacles, queue_size=1)
 
+        # Live tuning. Started last so the planner and every subscriber already
+        # exist by the time the server fires its initial callback.
+        self.reconfigure_server = None
+        if DYNAMIC_RECONFIGURE:
+            self.reconfigure_server = Server(ControlLaneConfig, self.cb_reconfigure)
+            # The cfg's defaults are a BUILD-TIME snapshot of the JSON. Editing the
+            # JSON and restarting without rebuilding would otherwise let the server's
+            # initial callback silently revert the planner to the stale snapshot -
+            # the node would log the JSON values it loaded, then quietly run others.
+            # Pushing the freshly loaded values in makes the JSON authoritative and
+            # leaves the sliders showing what is actually in force.
+            self.reconfigure_server.update_configuration(params)
+            rospy.loginfo(f"[{node_name}] live tuning enabled: rosrun rqt_reconfigure rqt_reconfigure")
+        else:
+            rospy.logwarn(
+                f"[{node_name}] dynamic_reconfigure unavailable - running on the JSON "
+                f"values only. Rebuild the workspace to enable live tuning."
+            )
+
         rospy.on_shutdown(self.shutdown)
         rospy.loginfo(f"[{node_name}] follow-the-gap controller ready for {self.vehicle_name}")
+
+    def cb_reconfigure(self, config, level):
+        """Apply slider changes to the live planner.
+
+        Called once at startup with the cfg's build-time defaults, then immediately
+        again via update_configuration() with the values actually loaded from the
+        JSON. The JSON wins, so a config edit does not need a rebuild to take effect.
+        """
+        self.planner.set_params(config)
+
+        # Re-checked on every change, not just at startup: this is precisely the
+        # constraint a slider session is likely to break, and the symptom (every
+        # accepted gap aborts a frame or two in) looks like a tuning problem rather
+        # than an invalid combination.
+        if config["front_slice_half"] >= config["gap_min_width"] / 2.0:
+            rospy.logwarn(
+                f"[{self.node_name}] front_slice_half ({config['front_slice_half']}) >= "
+                f"gap_min_width/2 ({config['gap_min_width'] / 2.0}): the bot will abort "
+                f"every gap it accepts. Lower front_slice_half or raise gap_min_width."
+            )
+        if config["react_ymax"] >= config["front_slow_ymax"]:
+            rospy.logwarn(
+                f"[{self.node_name}] react_ymax ({config['react_ymax']}) >= front_slow_ymax "
+                f"({config['front_slow_ymax']}): duckies start mattering only after the "
+                f"speed ramp has begun. Lower react_ymax or raise front_slow_ymax."
+            )
+        return config
 
     def load_config(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))

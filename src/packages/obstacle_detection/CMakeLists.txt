@@ -6,9 +6,18 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   sensor_msgs
   duckietown_msgs
+  dynamic_reconfigure
 )
 
-catkin_package()
+# Reads config/control_lane_node.json at build time, so the sliders inherit the
+# same defaults, ranges and help text the node runs with.
+generate_dynamic_reconfigure_options(
+  cfg/ControlLane.cfg
+)
+
+catkin_package(
+  CATKIN_DEPENDS dynamic_reconfigure
+)
 
 catkin_install_python(PROGRAMS
   src/control_lane_node.py
