@@ -1,0 +1,85 @@
+<launch>
+    <!--
+      Obstacle-avoidance stack.
+
+      Normal driving stack:
+          roslaunch obstacle_detection obstacle_detection_stack.launch
+
+      Tuning / dry run - full stack, dashboard fully populated, robot stationary:
+          roslaunch obstacle_detection obstacle_detection_stack.launch controller:=false
+
+      controller:=false does NOT stop the controller node. The node runs and plans
+      exactly as it normally would; it just never publishes a drive command. That
+      distinction matters: the whole dashboard overlay - blocked and free intervals,
+      the chosen target, the avoidance state - is fed by /debug/free_path_plan, and
+      control_lane_node is its only publisher. Killing the node would blank out the
+      very visualization you tune against.
+
+      STARTUP SAFETY
+      roslaunch starts all of these at once and gives no ordering guarantee. The
+      detectors are far slower to come up than the controller: detect_lane_node
+      JIT-traces a U-Net and detect_obstacle_node loads YOLOv11, while
+      control_lane_node has nothing to load and is live almost immediately.
+
+      That gap is dangerous, because an absent /detect/duckie_BB is indistinguishable
+      from "no duckies ahead" - the planner would see a clear lane and drive off
+      while YOLO was still loading. So the controller holds v=0 until it has seen at
+      least one message on BOTH detector topics. That gate lives in
+      control_lane_node (require_detectors), not here, because only the node that
+      writes the drive command can enforce it.
+    -->
+
+    <arg name="lane" default="true"
+         doc="Lane segmentation. Publishes /detect/lane and /detect/lane_borders." />
+    <arg name="detector" default="true"
+         doc="YOLO duckie detection. Publishes /detect/duckie_BB." />
+    <arg name="controller" default="true"
+         doc="Publish drive commands. false = dry run: node still plans and still feeds the dashboard, robot stays still." />
+    <arg name="dashboard" default="true"
+         doc="Camera debug dashboard. Purely visual; needs X11." />
+
+    <!--
+      Start the controller node at all. Almost always true - use controller:=false
+      for a dry run instead. This exists only for the rare case where another node
+      needs sole ownership of car_cmd_switch_node/cmd.
+    -->
+    <arg name="controller_node" default="true"
+         doc="Start control_lane_node at all. Use controller:=false for a dry run instead." />
+
+    <!--
+      Startup gate. Leave this true on the robot.
+
+      false is for bench work only: it lets the controller act on lane data alone,
+      with no duckie detection running. Do not set it false with the robot on the
+      floor and a detector disabled - that is the exact combination the gate exists
+      to prevent.
+    -->
+    <arg name="require_detectors" default="true"
+         doc="Hold v=0 until both /detect/lane and /detect/duckie_BB are alive." />
+
+    <!-- Lane Detection (segmentation, lane error, lane borders) -->
+    <node pkg="obstacle_detection" type="detect_lane_node.py" name="detect_lane_node"
+          output="screen" if="$(arg lane)" />
+
+    <!-- Duckie Detection (YOLO) -> /detect/duckie_BB -->
+    <node pkg="obstacle_detection" type="detect_obstacle_node.py" name="detect_obstacle_node"
+          output="screen" if="$(arg detector)" />
+
+    <!--
+      Lane Following & Duckie Avoidance Control.
+
+      THE ONLY node here that moves the robot. Exactly one node may publish
+      car_cmd_switch_node/cmd; that is a load-bearing invariant of this stack. With
+      controller:=false it registers no publisher on that topic at all, so the
+      invariant holds trivially during a dry run.
+    -->
+    <node pkg="obstacle_detection" type="control_lane_node.py" name="control_lane_node"
+          output="screen" if="$(arg controller_node)">
+        <param name="publish_cmd" value="$(arg controller)" />
+        <param name="require_detectors" value="$(arg require_detectors)" />
+    </node>
+
+    <!-- Dashboard/UI -->
+    <node pkg="obstacle_detection" type="dashboard_node.py" name="dashboard_node"
+          if="$(arg dashboard)" />
+</launch>

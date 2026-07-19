@@ -206,6 +206,20 @@ class DashboardNode:
             status += " / STALE"
 
         cv2.putText(img, f"{status}: {reason}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+
+        # Without this banner a dry run is indistinguishable from a controller that
+        # is stuck at v=0, which is exactly the confusion that costs tuning time.
+        if plan.get("dry_run", False):
+            cv2.putText(
+                img,
+                "DRY RUN - no drive commands published",
+                (10, 62),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 200, 255),
+                2,
+            )
+
         cv2.putText(
             img,
             f"raw:{plan.get('num_raw_duckies','?')} active:{plan.get('num_active_duckies','?')} relevant:{plan.get('num_relevant_duckies','?')} small:{plan.get('num_small_duckies_filtered','?')}",

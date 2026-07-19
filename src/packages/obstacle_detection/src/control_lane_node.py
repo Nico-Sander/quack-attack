@@ -25,6 +25,29 @@ class ControlLaneNode:
 
         self.load_config()
 
+        # Dry-run mode. The node does everything it normally does - planning, PID,
+        # /debug/free_path_plan - but never writes a drive command. This exists so
+        # the dashboard stays fully populated during parameter tuning: the entire
+        # overlay (blocked/free intervals, chosen target, avoidance state) is fed by
+        # free_path_plan, which only this node publishes. Simply not starting the
+        # node blinds the dashboard.
+        self.publish_cmd = bool(rospy.get_param("~publish_cmd", True))
+
+        # Startup gate. An absent /detect/duckie_BB looks exactly like "no duckies
+        # ahead" to the planner (get_blocked_intervals returns no intervals), so
+        # driving on lane data alone while YOLO is still loading would happily steer
+        # into a duckie. Hold still until both detectors have proven they are alive.
+        self.require_detectors = bool(rospy.get_param("~require_detectors", True))
+        self.lane_stream_alive = False
+        self.obstacle_stream_alive = False
+        self.startup_gate_open = not self.require_detectors
+
+        if not self.require_detectors:
+            rospy.logwarn(
+                f"[{node_name}] require_detectors=false - controller will drive on "
+                f"lane data alone. Bench use only."
+            )
+
         self.lastError = 0.0
         self.v = 0.0
         self.a = 0.0
@@ -79,11 +102,23 @@ class ControlLaneNode:
 
         base_topic = f"/{self.vehicle_name}"
 
-        self.pub_cmd_vel = rospy.Publisher(
-            f"{base_topic}/car_cmd_switch_node/cmd",
-            Twist2DStamped,
-            queue_size=1,
-        )
+        # In dry-run the publisher is not even registered, so `rostopic info
+        # car_cmd_switch_node/cmd` shows no publisher at all. That is a stronger and
+        # more legible guarantee than registering and then declining to send, and it
+        # keeps the "exactly one publisher on cmd" invariant honest.
+        if self.publish_cmd:
+            self.pub_cmd_vel = rospy.Publisher(
+                f"{base_topic}/car_cmd_switch_node/cmd",
+                Twist2DStamped,
+                queue_size=1,
+            )
+        else:
+            self.pub_cmd_vel = None
+            rospy.logwarn(
+                f"[{self.node_name}] DRY RUN (publish_cmd=false): planning and debug "
+                f"output are live, no drive command will be published. "
+                f"The robot will not move."
+            )
 
         self.pub_debug_plan = rospy.Publisher(
             f"{base_topic}/debug/free_path_plan",
@@ -273,6 +308,11 @@ class ControlLaneNode:
     def cbObstacles(self, msg):
         now = rospy.Time.now().to_sec()
         self.last_obstacle_msg_time = now
+
+        # detect_obstacle_node publishes on every processed frame whether or not it
+        # saw anything, so an arriving message - even an empty one - is proof the
+        # detector is up. That is what makes it usable as the startup heartbeat.
+        self.obstacle_stream_alive = True
 
         try:
             data = json.loads(msg.data)
@@ -997,10 +1037,71 @@ class ControlLaneNode:
 
         return debug
 
+    def publish_plan(self, debug):
+        """Publishes the planner debug snapshot, tagged with the drive-command mode.
+
+        dry_run rides along on every message because the dashboard otherwise cannot
+        tell the two stationary cases apart: a robot held still by dry run looks
+        exactly like a robot that computed v=0 and is stuck.
+        """
+        debug["dry_run"] = not self.publish_cmd
+        self.pub_debug_plan.publish(String(data=json.dumps(debug)))
+
+    def detectors_ready(self):
+        """True once both detector streams have been seen at least once.
+
+        Latching: this only gates start-up. Once both detectors have spoken the gate
+        stays open, and mid-run dropouts are left to the existing lane_timeout /
+        duckie_hold_time logic, which already degrades gracefully. Re-closing the
+        gate on a dropout would stop the robot dead in the middle of the track on a
+        single missed frame.
+        """
+        if self.startup_gate_open:
+            return True
+
+        if self.lane_stream_alive and self.obstacle_stream_alive:
+            self.startup_gate_open = True
+            rospy.loginfo(
+                f"[{self.node_name}] Both detectors alive - releasing startup gate, "
+                f"driving enabled."
+            )
+            return True
+
+        return False
+
     def cbFollowLane(self, msg):
         lane_error = float(msg.data)
         self.current_lane_error = lane_error
         self.last_lane_msg_time = rospy.Time.now().to_sec()
+        self.lane_stream_alive = True
+
+        if not self.detectors_ready():
+            self.v = 0.0
+            self.a = 0.0
+            self.last_time = None
+            self.integral = 0.0
+
+            waiting_for = []
+            if not self.lane_stream_alive:
+                waiting_for.append("/detect/lane")
+            if not self.obstacle_stream_alive:
+                waiting_for.append("/detect/duckie_BB")
+
+            rospy.loginfo_throttle(
+                2.0,
+                f"[{self.node_name}] Startup gate closed, holding v=0. "
+                f"Waiting for: {', '.join(waiting_for)}"
+            )
+
+            self.latest_debug = {
+                "avoidance_active": False,
+                "reason": "waiting_for_detectors",
+                "waiting_for": waiting_for,
+                "v": 0.0,
+                "omega": 0.0,
+            }
+            self.publish_plan(self.latest_debug)
+            return
 
         target_x, debug = self.choose_avoidance_target(lane_error)
 
@@ -1015,7 +1116,7 @@ class ControlLaneNode:
             debug["v"] = self.v
             debug["omega"] = self.a
 
-            self.pub_debug_plan.publish(String(data=json.dumps(debug)))
+            self.publish_plan(debug)
             self.latest_debug = debug
             return
 
@@ -1027,7 +1128,7 @@ class ControlLaneNode:
                 debug["v"] = self.v
                 debug["omega"] = self.a
 
-                self.pub_debug_plan.publish(String(data=json.dumps(debug)))
+                self.publish_plan(debug)
                 self.latest_debug = debug
                 return
 
@@ -1056,7 +1157,7 @@ class ControlLaneNode:
 
             if self.should_turn_in_place_for_avoidance(raw_avoid_error):
                 debug = self.apply_avoidance_turn_in_place(raw_avoid_error, debug)
-                self.pub_debug_plan.publish(String(data=json.dumps(debug)))
+                self.publish_plan(debug)
                 self.latest_debug = debug
                 return
 
@@ -1072,10 +1173,14 @@ class ControlLaneNode:
         debug["error"] = error
         debug["v"] = self.v
         debug["omega"] = self.a
-        self.pub_debug_plan.publish(String(data=json.dumps(debug)))
+        self.publish_plan(debug)
         self.latest_debug = debug    
 
     def fnShutDown(self):
+        if self.pub_cmd_vel is None:
+            rospy.loginfo("Shutting down (dry run). No cmd was ever published.")
+            return
+
         rospy.loginfo("Shutting down. cmd_vel will be 0")
         twist = Twist2DStamped(v=0.0, omega=0.0)
         self.pub_cmd_vel.publish(twist)
@@ -1084,6 +1189,19 @@ class ControlLaneNode:
         rate = rospy.Rate(10)
 
         while not rospy.is_shutdown():
+            if self.pub_cmd_vel is None:
+                # Dry run: keep the loop alive so callbacks keep firing and the
+                # dashboard keeps updating, but send nothing. self.v/self.a are still
+                # computed and still reported via free_path_plan, so you can watch
+                # what the controller WOULD have commanded.
+                rospy.loginfo_throttle(
+                    5.0,
+                    f"[{self.node_name}] DRY RUN - would command "
+                    f"v={self.v:.3f} omega={self.a:.3f}"
+                )
+                rate.sleep()
+                continue
+
             twist = Twist2DStamped()
             twist.header.stamp = rospy.Time.now()
             twist.v = self.v
