@@ -3,19 +3,19 @@
   "parameters": {
     "controller": {
       "v_cruise": {
-        "default": 0.08,
+        "default": 0.15,
         "min": 0.0,
         "max": 0.3,
         "help": "Forward speed with a clear road (lane following)."
       },
       "v_avoid": {
-        "default": 0.06,
+        "default": 0.15,
         "min": 0.0,
         "max": 0.3,
         "help": "Forward speed while steering around a duckie (far end of the proximity ramp)."
       },
       "v_min": {
-        "default": 0.04,
+        "default": 0.05,
         "min": 0.0,
         "max": 0.3,
         "help": "Creep floor, above the ~0.05 friction stall limit with a small margin. Used when close to a duckie or in unknown geometry."
@@ -27,25 +27,25 @@
         "help": "Proportional steering gain. omega = k_steer * (0.5 - target_x) * 2, which equals k_steer * lane_error in lane following - i.e. this IS the lane P-gain. Matches the proven Challenge-1 value; raise if the bot understeers and crosses lines, lower if it oscillates."
       },
       "omega_rotate": {
-        "default": 1.8,
+        "default": 2.0,
         "min": 0.0,
         "max": 4.0,
         "help": "In-place rotation rate in ESCAPE_ROTATE. Must be high enough to break static friction when v=0 - too low and the bot buzzes but does not turn."
       },
       "omega_max": {
-        "default": 3.0,
+        "default": 5.0,
         "min": 0.0,
         "max": 5.0,
         "help": "Hard cap on |omega| for any command. 4 = the 'very abrupt' end of the usable range."
       },
       "lane_margin": {
-        "default": 0.12,
+        "default": 0.08,
         "min": 0.0,
         "max": 0.3,
         "help": "Hard inset from each detected line. The steerable corridor is [left_wall+margin, right_wall-margin]."
       },
       "duckie_margin_base": {
-        "default": 0.01,
+        "default": 0.04,
         "min": 0.0,
         "max": 0.3,
         "help": "Lateral inflation added to each side of a far duckie's box."
@@ -57,7 +57,7 @@
         "help": "Extra lateral inflation added proportional to proximity (ymax). A close duckie is inflated by base + gain."
       },
       "gap_min_width": {
-        "default": 0.1,
+        "default": 0.21,
         "min": 0.02,
         "max": 0.6,
         "help": "Minimum normalized width of a free interval to count as passable. Below this, the controller rotates to escape."
@@ -69,7 +69,7 @@
         "help": "Half-width of the central 'is something in my path' probe, around the column the bot is actually steering toward. Represents the ROBOT'S OWN WIDTH in normalized image x, not a comfort zone. HARD CONSTRAINT: keep it below gap_min_width/2 (currently 0.05). If it is wider, the two duckies forming the edges of an accepted gap fall inside the probe while the bot drives between them, front_block fires on the gap's own walls, and the manoeuvre is abandoned a frame or two after it starts. Was hardcoded at 0.18 against a gap_min_width of 0.1, which made every accepted gap self-aborting. The node warns at startup if this constraint is violated."
       },
       "react_ymax": {
-        "default": 0.55,
+        "default": 0.6,
         "min": 0.0,
         "max": 1.0,
         "help": "Closeness (ymax, bottom-of-frame = closer) a duckie must reach before it counts at all - creates its blocked interval and can trigger avoidance. HIGHER = react closer/later, LOWER = react farther/earlier. This is the knob for 'reacts too early'. Keep it below front_slow_ymax."
@@ -105,13 +105,13 @@
         "help": "Consecutive invalid lane-border readings before that side's line is treated as absent and the corridor opens on that side. This is line MEMORY: while the streak is below this, the last known line position is still enforced as a hard wall. Too low and a brief loss of sight (e.g. mid-rotation) releases the constraint and the bot drives over the marking; too high and it keeps steering away from a line that is genuinely gone."
       },
       "duckie_hold_time": {
-        "default": 1.0,
+        "default": 0.8,
         "min": 0.0,
         "max": 5.0,
         "help": "Seconds a duckie's span is kept after detections stop arriving (blind pass). Raising it stops a spin from erasing the duckie that caused the escape; but the span is stored in IMAGE x, so a stale duckie sits at the wrong bearing once the bot has turned or driven past it. Above ~1.5 expect phantom obstacles. A proper fix needs heading-indexed memory."
       },
       "escape_relax_after": {
-        "default": 2.0,
+        "default": 1.5,
         "min": 0.0,
         "max": 10.0,
         "help": "After rotating this long with no passable gap, progressively relax gap_min_width and inflation until a gap opens (anti-permanent-freeze)."

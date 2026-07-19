@@ -8,9 +8,20 @@ rename table. Roughly a third of the old knobs carry over directly, a third need
 converting, and a third describe machinery that no longer exists. Four knobs here
 are new and have no old value to inherit.
 
-**None of the suggested values have been driven.** They are conversions of your
-tuned numbers, not measurements. Treat the "suggested" column as a starting point
-that should still be checked on the robot.
+**The suggested values are now applied** in `config/control_lane_node.json`, so
+this branch starts from your tuning rather than upstream defaults.
+
+**None of them have been driven.** They are conversions of your tuned numbers, not
+measurements. Range and cross-parameter constraints are checked; behaviour is not.
+
+Sanity check with these values (first-sight geometry, corridor `[0.230, 0.770]`):
+a duckie spanning 20% of image width, centred, leaves 0.055 of free space per
+side. That is below the robot's own modelled width (`front_slice_half` × 2 =
+0.08), so the planner rotates rather than squeezing past — correct behaviour, but
+it means this configuration reaches `ESCAPE_ROTATE` sooner than the upstream
+defaults would. Whether that is right depends on the real duckie sizes on the
+course. Watch `state` and `selected_free_width` on the dashboard in dry run
+before driving.
 
 ---
 
