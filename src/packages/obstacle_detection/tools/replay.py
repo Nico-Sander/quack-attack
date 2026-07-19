@@ -275,6 +275,86 @@ def show_contacts(records, window=6, contact_cm=12.0):
               f"{r['omega']:>7}  {r['reason']}{mark}")
 
 
+def measure_report(events, params, contact_cm=12.0):
+    """Measure the clearance the robot ACTUALLY had, with no planner involved.
+
+    Replaying with changed parameters is a counterfactual: the planner decides
+    differently, but the recorded detections still come from the trajectory the
+    robot really drove, so the two no longer correspond. To ask "how close did it
+    actually pass" the planner must be taken out of the loop entirely.
+
+    /debug/free_path_plan records front_probe_x per frame - the column the robot was
+    genuinely steering toward - so pairing that with the concurrent detections gives
+    the real clearance history, evaluated under the corrected range-aware geometry.
+    """
+    k = params["camera_width_k"]
+    robot_half_cm = params["robot_width_cm"] / 2.0
+
+    ducks = []
+    rows = []
+    for e in events:
+        if e["kind"] == "duckie_BB":
+            ducks = e["data"].get("duckies", [])
+            continue
+        if e["kind"] != "free_path_plan":
+            continue
+        plan = e["data"]
+        drive_x = plan.get("front_probe_x")
+        if drive_x is None:
+            continue
+
+        worst = None
+        for d in ducks:
+            try:
+                xmin, xmax, ymax = float(d["xmin"]), float(d["xmax"]), float(d["ymax"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            dist_cm = ymax_cm(ymax)
+            half = robot_half_cm * k / max(dist_cm, 6.0)
+            if xmax < drive_x - half:
+                gap = (drive_x - half) - xmax
+            elif xmin > drive_x + half:
+                gap = xmin - (drive_x + half)
+            else:
+                gap = -min(xmax - (drive_x - half), (drive_x + half) - xmin)
+            gap_cm = gap * dist_cm / k
+            if worst is None or gap_cm < worst[0]:
+                worst = (gap_cm, dist_cm, xmin, xmax, plan.get("state", "?"))
+        if worst:
+            rows.append((e["t"], drive_x) + worst)
+
+    if not rows:
+        print("no free_path_plan messages with front_probe_x - was the bag recorded "
+              "with a build that publishes it?")
+        return
+
+    near = [r for r in rows if r[3] <= contact_cm]
+    hits = [r for r in near if r[2] < 0.0]
+    graze = [r for r in near if 0.0 <= r[2] < 2.0]
+
+    print(f"\n=== measured from the real run ({len(rows)} plan frames) ===")
+    print(f"  frames with a duckie inside {contact_cm:.0f}cm : {len(near)}")
+    print(f"  of those, lateral overlap (CONTACT)  : {len(hits)}")
+    print(f"  of those, passed within 2cm (GRAZE)  : {len(graze)}")
+
+    if near:
+        w = min(near, key=lambda r: r[2])
+        print(f"\n  closest pass at close range: {w[2]:+.1f} cm")
+        print(f"    t={w[0]:.1f}s  duckie {w[3]:.0f}cm ahead at [{w[4]:.2f},{w[5]:.2f}]"
+              f"  drive_x={w[1]:.3f}  state={w[6]}")
+
+    focus = sorted(near, key=lambda r: r[2])[:12] if near else []
+    if focus:
+        print(f"\n  tightest {len(focus)} frames within {contact_cm:.0f}cm:")
+        print(f"  {'t':>6} {'clear_cm':>9} {'dist_cm':>8} {'drive_x':>8} "
+              f"{'duckie span':>14}  state")
+        print("  " + "-" * 66)
+        for t, dx, gap_cm, dist_cm, xmin, xmax, state in sorted(focus):
+            mark = "  << CONTACT" if gap_cm < 0 else ("  << graze" if gap_cm < 2 else "")
+            print(f"  {t:>6.1f} {gap_cm:>9.1f} {dist_cm:>8.0f} {dx:>8.3f} "
+                  f"  [{xmin:.2f},{xmax:.2f}]  {state}{mark}")
+
+
 def detections_report(events):
     """Summarise the RAW detection stream, independent of the planner.
 
@@ -331,6 +411,9 @@ def main():
     ap.add_argument("--sweep", metavar="K=V1,V2,...")
     ap.add_argument("--contact-cm", type=float, default=12.0,
                     help="distance below which a lateral overlap counts as a hit")
+    ap.add_argument("--measure", action="store_true",
+                    help="measure the clearance the robot actually had, from the "
+                         "recorded plan - no planner replay, no counterfactual")
     ap.add_argument("--detections", action="store_true",
                     help="summarise the raw detector stream, independent of the planner")
     ap.add_argument("--contact", action="store_true",
@@ -348,6 +431,10 @@ def main():
 
     if args.detections:
         detections_report(events)
+        return
+
+    if args.measure:
+        measure_report(events, load_params(overrides), args.contact_cm)
         return
 
     if args.sweep:
