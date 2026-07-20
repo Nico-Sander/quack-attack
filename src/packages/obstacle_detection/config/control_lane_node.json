@@ -9,7 +9,7 @@
         "help": "Forward speed with a clear road (lane following)."
       },
       "v_avoid": {
-        "default": 0.08,
+        "default": 0.07,
         "min": 0.0,
         "max": 0.3,
         "help": "Forward speed while steering around a duckie (far end of the proximity ramp)."
@@ -27,19 +27,19 @@
         "help": "Proportional steering gain. omega = k_steer * (0.5 - target_x) * 2, which equals k_steer * lane_error in lane following - i.e. this IS the lane P-gain. Matches the proven Challenge-1 value; raise if the bot understeers and crosses lines, lower if it oscillates."
       },
       "omega_rotate": {
-        "default": 2.0,
+        "default": 1.7,
         "min": 0.0,
         "max": 4.0,
         "help": "In-place rotation rate in ESCAPE_ROTATE. Must be high enough to break static friction when v=0 - too low and the bot buzzes but does not turn."
       },
       "omega_max": {
-        "default": 5.0,
+        "default": 4.0,
         "min": 0.0,
         "max": 5.0,
         "help": "Hard cap on |omega| for any command. 4 = the 'very abrupt' end of the usable range."
       },
       "lane_margin": {
-        "default": 0.08,
+        "default": 0.9,
         "min": 0.0,
         "max": 0.3,
         "help": "Hard inset from each detected line. The steerable corridor is [left_wall+margin, right_wall-margin]."
