@@ -194,10 +194,47 @@ class DashboardNode:
         x2_band, y2 = self.map_point(1.0, y_max)
         cv2.rectangle(img, (x1_band, y1), (x2_band, y2), self.C_MUTED, 1)
 
+        # Detected lines, then the corridor they produce, then the margin between the
+        # two. Drawing only the corridor (as this used to) hides lane_margin entirely:
+        # its whole effect is the gap between where a line was seen and where the
+        # planner will actually let the robot go.
+        source = str(plan.get("corridor_source", "walls"))
+        margin = plan.get("lane_margin", None)
+        wall_l = plan.get("wall_left", None)
+        wall_r = plan.get("wall_right", None)
+
+        for key, colour in (("yellow_x", self.C_WAIT), ("white_x", self.C_LINE)):
+            xv = plan.get(key, None)
+            if isinstance(xv, (int, float)):
+                wx, _ = self.map_point(xv, y_min)
+                cv2.line(img, (wx, y1), (wx, y2), colour, 1, cv2.LINE_AA)
+
         lane_x1, _ = self.map_point(x_left, y_min)
         lane_x2, _ = self.map_point(x_right, y_min)
-        cv2.line(img, (lane_x1, y1), (lane_x1, y2), self.C_LINE, 2)
-        cv2.line(img, (lane_x2, y1), (lane_x2, y2), self.C_LINE, 2)
+
+        # Shade wall -> corridor bound on each side: that band IS lane_margin.
+        if source == "walls":
+            for wall, bound in ((wall_l, x_left), (wall_r, x_right)):
+                if not isinstance(wall, (int, float)):
+                    continue
+                wx, _ = self.map_point(self.clamp01(wall), y_min)
+                bx, _ = self.map_point(self.clamp01(bound), y_min)
+                if wx != bx:
+                    self.draw_rect_alpha(img, min(wx, bx), y1, max(wx, bx), y2,
+                                         self.C_ACCENT, 0.20)
+
+        cv2.line(img, (lane_x1, y1), (lane_x1, y2), self.C_ACCENT, 2)
+        cv2.line(img, (lane_x2, y1), (lane_x2, y2), self.C_ACCENT, 2)
+
+        # The three open-corridor cases look identical on screen but mean very
+        # different things, so name the one in force when it is not the normal case.
+        if source != "walls":
+            note = ("corridor OPEN: lane data stale" if source == "stale_open"
+                    else "corridor OPEN: margin too large for the lane")
+            self.label(img, note, (lane_x1 + 8, y2 - 10), self.C_ESCAPE, 0.5, 1)
+        elif isinstance(margin, (int, float)):
+            self.label(img, f"margin {margin:.2f}", (lane_x1 + 6, y2 - 10),
+                       self.C_ACCENT, 0.45, 1)
 
         if blocked:
             for left, right in free:
@@ -221,6 +258,36 @@ class DashboardNode:
             cv2.line(img, (tx, y1), (tx, y2), self.C_TARGET, 2)
             self.label(img, "target", (tx + 6, y1 + 16), self.C_TARGET, 0.45, 1)
 
+    def corridor_row(self, plan):
+        """Corridor width and the margin that produced it, e.g. '0.40 w, m0.08'.
+
+        Width is the number that matters when judging lane_margin: each side is
+        inset by the margin, so the usable corridor shrinks by twice it, and once
+        that reaches zero the planner falls back to a fully open corridor.
+        """
+        source = str(plan.get("corridor_source", "walls"))
+        if source == "stale_open":
+            return "OPEN (stale)"
+        if source == "degenerate_open":
+            return "OPEN (margin too big)"
+        left = plan.get("lane_left", None)
+        right = plan.get("lane_right", None)
+        margin = plan.get("lane_margin", None)
+        if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+            return "-"
+        width = f"{right - left:.2f} w"
+        return f"{width}, m{margin:.2f}" if isinstance(margin, (int, float)) else width
+
+    def corridor_colour(self, plan):
+        source = str(plan.get("corridor_source", "walls"))
+        if source != "walls":
+            return self.C_ESCAPE
+        left, right = plan.get("lane_left", 0.0), plan.get("lane_right", 1.0)
+        if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+            # Below roughly a robot's width of corridor there is nothing to steer in.
+            return self.C_AVOID if (right - left) < 0.15 else self.C_TEXT
+        return self.C_MUTED
+
     def draw_panel(self, img, plan, stale):
         """Semi-transparent info panel with the command and controller status."""
         state = str(plan.get("state", "AVOIDANCE" if plan.get("avoidance_active") else "CRUISE"))
@@ -235,6 +302,7 @@ class DashboardNode:
              f"{plan.get('num_raw_duckies','-')}/{plan.get('num_active_duckies','-')}/"
              f"{plan.get('num_relevant_duckies','-')}", self.C_MUTED),
             ("lane", str(plan.get("lane_source", "-")), self.C_MUTED),
+            ("corridor", self.corridor_row(plan), self.corridor_colour(plan)),
         ]
 
         pad, line_h, key_w = 12, 22, 130

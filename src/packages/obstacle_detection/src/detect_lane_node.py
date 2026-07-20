@@ -26,10 +26,17 @@ class DetectLaneNode:
         self.lane_search_y_ratio = 0.25
         # Fraction of the image width the 10-90 percentile spread of a line's pixels
         # must exceed to count as "approached head-on" rather than followed. The
-        # search band is 40 of 192 rows tall, so a line at 45 deg spreads ~0.21 and a
-        # near-horizontal one most of the frame; 0.35 sits above any plausible
-        # curvature the robot could be tracking normally.
-        self.head_on_spread = 0.35
+        # search band is 40 of 192 rows tall, so on synthetic masks a line at 45 deg
+        # spreads ~0.16 and an orthogonal one ~0.80.
+        #
+        # Raised from 0.35 after measuring on the course: peak spread during a normal
+        # lap was ALSO ~0.35, leaving no margin at all. A genuinely head-on line reads
+        # far higher, so 0.45 keeps the true detection while pulling the trip point
+        # away from ordinary following. The cost is triggering slightly later inside
+        # a detection window that is bounded by the sample band geometry anyway
+        # (~18-24 cm), which is cheap next to the robot stopping mid-lap on a false
+        # positive.
+        self.head_on_spread = 0.45
         self._target_im_size = 192 
         self._vehicle_name = os.environ.get("VEHICLE_NAME", "default_robot")
 

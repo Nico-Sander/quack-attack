@@ -172,6 +172,7 @@ class GapPlanner:
         self.small_duckie_count = 0
 
         self.lane_error = 0.0
+        self.corridor_source = "walls"
 
         # Wrong-way detection. With right-hand traffic the yellow centre line is on the
         # LEFT and the white outer line on the RIGHT whenever the robot is travelling
@@ -369,15 +370,24 @@ class GapPlanner:
         return (now - self.last_lane_time) < LANE_TIMEOUT
 
     def corridor(self, now):
-        """Return (L, R, left_open, right_open): the hard steerable bounds."""
+        """Return (L, R, left_open, right_open): the hard steerable bounds.
+
+        Also records corridor_source, purely so the dashboard can distinguish the
+        three ways the bounds can end up wide open. They look identical on screen but
+        mean very different things, and a lane_margin too large for the lane silently
+        lands in the third one.
+        """
         if not self.lane_fresh(now):
             # No recent lane data: treat both sides as open unknown geometry.
+            self.corridor_source = "stale_open"
             return 0.0, 1.0, True, True
         left = 0.0 if self.left_open else clamp01(self.left_wall + self.lane_margin)
         right = 1.0 if self.right_open else clamp01(self.right_wall - self.lane_margin)
         if right - left < 2 * EPS:
             # Degenerate corridor (walls crossed / too tight): open it up so we can move.
+            self.corridor_source = "degenerate_open"
             return 0.0, 1.0, True, True
+        self.corridor_source = "walls"
         return left, right, self.left_open, self.right_open
 
     def active_duckies(self, now):
@@ -748,6 +758,14 @@ class GapPlanner:
             "lane_left": left,
             "lane_right": right,
             "corridor_left_open": left_open,
+            # Raw wall positions BEFORE lane_margin, so the dashboard can draw the
+            # inset the margin actually produces rather than only its result.
+            "wall_left": self.left_wall,
+            "wall_right": self.right_wall,
+            "yellow_x": self.yellow_x,
+            "white_x": self.white_x,
+            "lane_margin": self.lane_margin,
+            "corridor_source": self.corridor_source,
             "corridor_right_open": right_open,
             "blocked_intervals": [list(s) for s in spans],
             "free_intervals": [list(f) for f in frees],
