@@ -1,36 +1,58 @@
 services:
   duckierace_env:
-    build: .
+    build:
+      context: .
+      # Bake a user with your UID/GID into the image so the account the container
+      # runs as actually exists (has a name, a group and a home directory).
+      args:
+        HOST_UID: "${HOST_UID:-1000}"
+        HOST_GID: "${HOST_GID:-1000}"
     container_name: duckie_ros
     network_mode: "host"
+    # Run as the host user, not root. Without this, every file the container
+    # writes into the bind-mounted repo (calibration yaml, build/, devel/,
+    # __pycache__/) comes out root-owned and unreadable/unwritable from the
+    # host until manually chowned. HOST_UID/HOST_GID are exported by start.sh
+    # from `id -u`/`id -g`; the :-1000 fallback covers running compose
+    # directly without start.sh on a typical single-user Linux box.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     environment:
       # These variables will be populated by your .env file
       - ROS_MASTER_URI=http://${DUCKIEBOT_IP}:11311
       - ROS_IP=${HOST_IP}
       - VEHICLE_NAME=${VEHICLE_NAME}
-      
+
+      # HOME is no longer overridden: the image now creates a real account for
+      # HOST_UID with its own home, so ROS logs and the Qt/RViz config cache land
+      # somewhere persistent and .bashrc is actually found by interactive shells.
+
       # X11 Display routing
       - DISPLAY=$DISPLAY
-      
+
       # Crucial: Fixes shared memory rendering crashes with RViz in Docker
       - QT_X11_NO_MITSHM=1
 
-      # Tell the container where to find the auth file
-      - XAUTHORITY=/root/.Xauthority
+      - XAUTHORITY=/home/duckie/.Xauthority
 
     volumes:
-      - .:/workspace 
+      - .:/workspace
       # Mount the host's X11 socket
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       # Share the host's X11 authentication file
-      - ~/.Xauthority:/root/.Xauthority:ro
+      - ~/.Xauthority:/home/duckie/.Xauthority:ro
       
     # Pass GPU hardware to the container for RViz
     devices:
       - /dev/dri:/dev/dri
       
-    # Tell the container how to find the Duckiebot on the network
+    # Tell the container how to find the Duckiebot on the network.
+    # The container has no mDNS resolver of its own, so these are the only way it
+    # can turn a hostname into an address. .local matters most: the bot's ROS
+    # nodes advertise their URIs as http://<vehicle>.local:PORT, so without it
+    # the master connects (ROS_MASTER_URI is a raw IP) but every topic
+    # subscription fails to reach the publisher.
     extra_hosts:
+      - "${VEHICLE_NAME}.local:${DUCKIEBOT_IP}"
       - "${VEHICLE_NAME}.lan:${DUCKIEBOT_IP}"
       - "${VEHICLE_NAME}:${DUCKIEBOT_IP}"
 
