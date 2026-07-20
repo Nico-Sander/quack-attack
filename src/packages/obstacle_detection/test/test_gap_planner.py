@@ -45,7 +45,7 @@ def feed_lane(planner, t, yellow_x, white_x, crossed=False,
               yellow_valid=True, white_valid=True):
     """One lane_borders message, in the same order the node applies them."""
     planner.update_lane_borders(t, yellow_x, white_x, yellow_valid, white_valid)
-    planner.set_lines_crossed(crossed)
+    planner.set_lines_crossed(t, crossed)
 
 
 def settle(planner, frames, t0=1.0, **kwargs):
@@ -151,7 +151,7 @@ def test_wrong_way_does_not_alter_the_corridor(params):
     p = cln.GapPlanner(params)
     t = settle(p, 40, yellow_x=0.786, white_x=0.229, crossed=True)
     before = p.corridor(t)
-    p.set_lines_crossed(True)
+    p.set_lines_crossed(t, True)
     assert p.corridor(t) == before
 
 

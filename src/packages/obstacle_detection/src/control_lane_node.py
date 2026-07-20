@@ -58,6 +58,14 @@ HYSTERESIS_MARGIN = 0.10   # other side must beat current by this to switch avoi
 GAP_INSET = 0.04           # keep the target this far inside the chosen gap's edges
 GAP_STICKY_BONUS = 0.06    # width bonus for the gap we are already driving into
 CLEAR_HOLD_TIME = 0.6      # s the road must stay clear before AVOID falls back to CRUISE
+# Frames of a complete, correctly-ordered view needed to end a wrong-way turn. Kept
+# small deliberately: the robot is already rotating when this is evaluated, so every
+# extra frame is overshoot - at omega_rotate 2.0 rad/s one frame is roughly 11 deg.
+WRONG_WAY_CLEAR_FRAMES = 2
+# Safety valve. A 180 deg correction takes ~1.6 s at omega_rotate 2.0, so this is
+# several full sweeps. If no clean view has appeared by then the detection is the
+# problem and more rotation will not fix it - stop, rather than spin forever.
+WRONG_WAY_MAX_ROTATE = 5.0
 EPS = 1e-3
 
 # Measured on the course: bbox-bottom ymax -> distance from the robot's front, cm.
@@ -149,6 +157,8 @@ class GapPlanner:
         self.white_seen = False
         self.yellow_invalid_streak = 0
         self.white_invalid_streak = 0
+        self.yellow_valid_now = False
+        self.white_valid_now = False
 
         # Duckie state.
         self.duckies = []            # list of dicts with xmin,xmax,ymax
@@ -169,6 +179,9 @@ class GapPlanner:
         self.lines_crossed = False
         self.wrong_way = False
         self.crossed_streak = 0
+        self.uncrossed_streak = 0
+        self.wrong_way_since = 0.0
+        self.wrong_way_timed_out = False
 
         # FSM state.
         self.state = CRUISE
@@ -214,18 +227,46 @@ class GapPlanner:
     def update_lane_error(self, error):
         self.lane_error = clamp(float(error), -1.0, 1.0)
 
-    def set_lines_crossed(self, crossed):
-        """Fold in the detector's crossed-order flag, debounced.
+    def set_lines_crossed(self, now, crossed):
+        """Fold in the detector's crossed-order flag, debounced, and LATCH it.
 
-        Only counts while BOTH colours are actually seen: with one line missing the
+        Entering only counts while BOTH colours are seen: with one line missing the
         other's position is a fallback constant, so the ordering carries no meaning.
-        Reuses lane_hold_frames as the debounce so line-loss and wrong-way share one
-        notion of "long enough to believe".
+        Reuses lane_hold_frames as the entry debounce.
+
+        Leaving is deliberately NOT the mirror of entering. Rotating to correct a
+        wrong-way pose swings a line out of frame almost immediately, so a symmetric
+        rule would clear the flag one frame into the turn and abort it half-way -
+        which is exactly what was observed on the course. Once latched, only a
+        complete and correctly-ordered view ends it, which is the same condition as
+        "the robot can see where it is again".
+
+        The timeout is not optional: without it, a robot that rotated into the bulb -
+        where both lines are never simultaneously visible - would spin forever, which
+        is a worse failure than the one this fixes.
         """
         crossed = bool(crossed) and self.yellow_seen and self.white_seen
         self.lines_crossed = crossed
+
+        if self.wrong_way:
+            # Only a view with BOTH lines currently visible and correctly ordered
+            # ends the turn. Using the debounced flags here would clear the latch one
+            # frame after rotation swung a line out of shot, aborting the correction
+            # half-way - which is the bug this latch exists to fix.
+            both_valid_now = self.yellow_valid_now and self.white_valid_now
+            self.uncrossed_streak = self.uncrossed_streak + 1 \
+                if (both_valid_now and not crossed) else 0
+
+            if self.uncrossed_streak >= WRONG_WAY_CLEAR_FRAMES:
+                self.clear_wrong_way(timed_out=False)
+            return
+
         self.crossed_streak = self.crossed_streak + 1 if crossed else 0
-        self.wrong_way = self.crossed_streak > self.lane_hold_frames
+        if self.crossed_streak > self.lane_hold_frames:
+            self.wrong_way = True
+            self.wrong_way_since = now
+            self.uncrossed_streak = 0
+            self.wrong_way_timed_out = False
 
     def update_lane_borders(self, now, yellow_x, white_x, yellow_valid, white_valid):
         """Fold one lane-border message into debounced wall state.
@@ -269,6 +310,14 @@ class GapPlanner:
 
         self.yellow_seen = self.yellow_invalid_streak <= self.lane_hold_frames
         self.white_seen = self.white_invalid_streak <= self.lane_hold_frames
+
+        # RAW per-frame validity, kept separately from the debounced *_seen flags.
+        # The debounce deliberately lags by lane_hold_frames, which is right for
+        # holding a corridor through a dropout but wrong for asking "can I see both
+        # lines right now" - during a wrong-way turn the stale flag reports a
+        # complete view for 12 frames after a line has actually left the frame.
+        self.yellow_valid_now = bool(yellow_valid)
+        self.white_valid_now = bool(white_valid)
 
         self.last_lane_time = now
 
@@ -406,7 +455,19 @@ class GapPlanner:
         return None
 
     # ---- main step ----------------------------------------------------------
+    def clear_wrong_way(self, timed_out):
+        self.wrong_way = False
+        self.wrong_way_timed_out = timed_out
+        self.crossed_streak = 0
+        self.uncrossed_streak = 0
+
     def step(self, now):
+        # Safety valve, evaluated here rather than in the lane callback so that it
+        # still fires if lane_borders stops arriving altogether - a wedged detector
+        # would otherwise leave the robot latched in a permanent rotation.
+        if self.wrong_way and (now - self.wrong_way_since) > WRONG_WAY_MAX_ROTATE:
+            self.clear_wrong_way(timed_out=True)
+
         left, right, left_open, right_open = self.corridor(now)
         # "Unknown geometry": no trustworthy corridor to follow (both sides open,
         # whether from debounced line loss or stale data). Not the same as a stale
@@ -679,6 +740,8 @@ class GapPlanner:
             "lines_crossed": self.lines_crossed,
             "wrong_way": self.wrong_way,
             "crossed_streak": self.crossed_streak,
+            "uncrossed_streak": self.uncrossed_streak,
+            "wrong_way_timed_out": self.wrong_way_timed_out,
             "left_invalid_streak": self.left_invalid_streak,
             "right_invalid_streak": self.right_invalid_streak,
             "v": v,
@@ -828,7 +891,8 @@ class ControlLaneNode:
             )
             # Crossed colour order means the robot is pointed backwards down a
             # lane. The detector has always published this; nothing consumed it.
-            self.planner.set_lines_crossed(bool(data.get("lines_crossed", False)))
+            self.planner.set_lines_crossed(
+                rospy.Time.now().to_sec(), bool(data.get("lines_crossed", False)))
             self.got_borders = True
         except Exception as e:
             rospy.logwarn_throttle(1.0, f"[{self.node_name}] bad lane_borders: {e}")
