@@ -110,7 +110,9 @@ def replay(events, params):
                     data.get("yellow_x", 0.05), data.get("white_x", 0.95),
                     bool(data.get("yellow_valid", True)),
                     bool(data.get("white_valid", True)))
-                planner.set_lane_error_trusted(bool(data.get("valid", True)))
+                # After update_lane_borders, which sets the yellow_seen/white_seen
+                # flags this depends on.
+                planner.set_lines_crossed(bool(data.get("lines_crossed", False)))
                 got_borders = True
             elif ev["kind"] == "duckie_BB":
                 ducks = data.get("duckies", [])

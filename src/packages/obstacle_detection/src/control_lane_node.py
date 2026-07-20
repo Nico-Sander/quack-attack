@@ -156,12 +156,19 @@ class GapPlanner:
         self.raw_duckie_count = 0
         self.small_duckie_count = 0
 
-        # Lane error (route). `lane_error_trusted` is separate from line visibility:
-        # when the lane node reports the two lines in crossed order (the bot is skewed,
-        # or on the return leg), the derived error signal is inverted and unusable - but
-        # both lines were still SEEN, so the corridor they define is still valid.
         self.lane_error = 0.0
-        self.lane_error_trusted = True
+
+        # Wrong-way detection. With right-hand traffic the yellow centre line is on the
+        # LEFT and the white outer line on the RIGHT whenever the robot is travelling
+        # the correct way down a lane. Crossed order therefore means it is pointed
+        # backwards - which is how it drove back out of the entry lane, following a
+        # perfectly good lane centre in the wrong direction.
+        #
+        # Debounced, because a single crossed frame also happens transiently when the
+        # bot is skewed mid-manoeuvre, and reacting to that would spin it up spuriously.
+        self.lines_crossed = False
+        self.wrong_way = False
+        self.crossed_streak = 0
 
         # FSM state.
         self.state = CRUISE
@@ -207,8 +214,18 @@ class GapPlanner:
     def update_lane_error(self, error):
         self.lane_error = clamp(float(error), -1.0, 1.0)
 
-    def set_lane_error_trusted(self, trusted):
-        self.lane_error_trusted = bool(trusted)
+    def set_lines_crossed(self, crossed):
+        """Fold in the detector's crossed-order flag, debounced.
+
+        Only counts while BOTH colours are actually seen: with one line missing the
+        other's position is a fallback constant, so the ordering carries no meaning.
+        Reuses lane_hold_frames as the debounce so line-loss and wrong-way share one
+        notion of "long enough to believe".
+        """
+        crossed = bool(crossed) and self.yellow_seen and self.white_seen
+        self.lines_crossed = crossed
+        self.crossed_streak = self.crossed_streak + 1 if crossed else 0
+        self.wrong_way = self.crossed_streak > self.lane_hold_frames
 
     def update_lane_borders(self, now, yellow_x, white_x, yellow_valid, white_valid):
         """Fold one lane-border message into debounced wall state.
@@ -359,10 +376,6 @@ class GapPlanner:
                 worst = max(worst, d["ymax"])
         return worst
 
-    def lane_target_x(self):
-        # error positive => center left => small target_x.
-        return clamp01((1.0 - self.lane_error) / 2.0)
-
     def lane_goal_x(self):
         """Goal column from the markings, using LINE COLOUR as a bearing reference.
 
@@ -401,10 +414,6 @@ class GapPlanner:
         lines_valid = self.lane_fresh(now) and not (left_open and right_open)
         unknown_geometry = not lines_valid
 
-        # Goal column: follow the lane when we trust the error signal, else bias into
-        # the U-turn (left). Note this is gated on lane_error_trusted SEPARATELY from
-        # the corridor: with the lines detected but in crossed order we fall back to
-        # the heading bias for the goal, while still honouring the corridor below.
         # Goal column. Driven by the markings whenever ANY line is visible - including
         # the one-line case, where the colour carries the bearing. heading_bias is the
         # last resort, for when both markings are gone.
@@ -463,7 +472,13 @@ class GapPlanner:
         committed = (self.state == AVOID
                      and (now - self.state_since) < self.avoid_min_dwell)
 
-        blocked_front = front_block or (not passable and not committed)
+        # Pointed backwards down a lane. Rotating in place is the right response and
+        # not merely the convenient one: it cannot carry the robot further off the
+        # course the way an arcing turn would, and it resolves itself - once the bot
+        # has swung round far enough the colours uncross, wrong_way clears, and normal
+        # lane following resumes. Routed through blocked_front so it reuses the escape
+        # dwell and the never-freeze guard rather than adding a fourth state.
+        blocked_front = front_block or self.wrong_way or (not passable and not committed)
         want_avoid = goal_blocked or front_slow or unknown_geometry
 
         # --- transitions (single owner) --------------------------------------
@@ -493,7 +508,10 @@ class GapPlanner:
             v = 0.0
             omega = self.escape_dir * self.omega_rotate
             target_x = goal_x
-            reason = "escape_rotate_relaxed" if relax < 1.0 else "escape_rotate_no_gap"
+            if self.wrong_way:
+                reason = "escape_rotate_wrong_way"
+            else:
+                reason = "escape_rotate_relaxed" if relax < 1.0 else "escape_rotate_no_gap"
         elif self.state == AVOID:
             target_x = self.avoid_target(best_gap, goal_x)
             # In unknown geometry cap at the creep floor - we don't have a validated
@@ -658,7 +676,9 @@ class GapPlanner:
             "lane_source": goal_source,
             "yellow_seen": self.yellow_seen,
             "white_seen": self.white_seen,
-            "lane_error_trusted": self.lane_error_trusted,
+            "lines_crossed": self.lines_crossed,
+            "wrong_way": self.wrong_way,
+            "crossed_streak": self.crossed_streak,
             "left_invalid_streak": self.left_invalid_streak,
             "right_invalid_streak": self.right_invalid_streak,
             "v": v,
@@ -806,7 +826,9 @@ class ControlLaneNode:
                 data.get("yellow_x", 0.05), data.get("white_x", 0.95),
                 bool(data.get("yellow_valid", True)), bool(data.get("white_valid", True)),
             )
-            self.planner.set_lane_error_trusted(bool(data.get("valid", True)))
+            # Crossed colour order means the robot is pointed backwards down a
+            # lane. The detector has always published this; nothing consumed it.
+            self.planner.set_lines_crossed(bool(data.get("lines_crossed", False)))
             self.got_borders = True
         except Exception as e:
             rospy.logwarn_throttle(1.0, f"[{self.node_name}] bad lane_borders: {e}")
