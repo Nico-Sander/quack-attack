@@ -229,3 +229,52 @@ def test_omega_rotate_floor_survives_live_edit(params):
     p = cln.GapPlanner(params)
     p.set_params({"omega_rotate": 0.1})
     assert p.omega_rotate == cln.MIN_ESCAPE_OMEGA
+
+
+# --- head-on markings ----------------------------------------------------
+
+
+def test_head_on_needs_debounce_then_blocks(params):
+    p = cln.GapPlanner(params)
+    for _ in range(cln.HEAD_ON_FRAMES):
+        p.set_head_on(True)
+    assert not p.head_on, "must not fire before HEAD_ON_FRAMES"
+    p.set_head_on(True)
+    assert p.head_on
+
+
+def test_head_on_drives_escape_rotate(params):
+    """A marking square across the path is a wall: rotate, do not drive over it."""
+    p = cln.GapPlanner(params)
+    t = settle(p, 20, yellow_x=0.229, white_x=0.786)
+    for _ in range(cln.HEAD_ON_FRAMES + 1):
+        p.set_head_on(True)
+    p.update_duckies(t, [])
+    v, omega, dbg = p.step(t)
+    assert dbg["state"] == cln.ESCAPE_ROTATE
+    assert dbg["reason"] == "escape_rotate_head_on_line"
+    assert v == 0.0 and abs(omega) > 0.0
+
+
+def test_head_on_clears_when_line_turns_edge_on(params):
+    """Not latched, unlike wrong_way: rotating makes the line vertical again, and
+    the robot should resume once it is travelling parallel to the marking."""
+    p = cln.GapPlanner(params)
+    for _ in range(cln.HEAD_ON_FRAMES + 1):
+        p.set_head_on(True)
+    assert p.head_on
+    p.set_head_on(False)
+    assert not p.head_on, "must clear immediately once the line is edge-on"
+
+
+def test_never_freeze_holds_while_head_on(params):
+    p = cln.GapPlanner(params)
+    t = 0.0
+    for _ in range(60):
+        t += 0.1
+        feed_lane(p, t, yellow_x=0.229, white_x=0.786)
+        p.set_head_on(True)
+        p.update_duckies(t, [])
+        v, omega, dbg = p.step(t)
+        assert not (abs(v) < 1e-3 and abs(omega) < 1e-3), f"froze at {dbg['reason']}"
+        assert abs(omega) <= params["omega_max"] + 1e-9

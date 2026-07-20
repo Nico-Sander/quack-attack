@@ -24,6 +24,12 @@ class DetectLaneNode:
 
         # Configuration Constants
         self.lane_search_y_ratio = 0.25
+        # Fraction of the image width the 10-90 percentile spread of a line's pixels
+        # must exceed to count as "approached head-on" rather than followed. The
+        # search band is 40 of 192 rows tall, so a line at 45 deg spreads ~0.21 and a
+        # near-horizontal one most of the frame; 0.35 sits above any plausible
+        # curvature the robot could be tracking normally.
+        self.head_on_spread = 0.35
         self._target_im_size = 192 
         self._vehicle_name = os.environ.get("VEHICLE_NAME", "default_robot")
 
@@ -205,6 +211,19 @@ class DetectLaneNode:
         return cleaned
 
     def get_x_from_mask(self, mask, class_idx, fallback_value):
+        """Median x of this class in the search band, plus how spread out it is.
+
+        The spread is what tells a line being FOLLOWED from one being APPROACHED
+        head-on. Sampling a fixed 40-row band, a line running roughly with the robot
+        occupies a narrow column - its own thickness. A line the robot is driving at
+        orthogonally is near-horizontal in the image and smears across most of the
+        width, and the median then lands near the image centre: a confident, entirely
+        fictional line position. That is how the robot drove over the boundary while
+        believing it was tracking it.
+
+        Reported as the 10-90 percentile range rather than min-max, so a few stray
+        mask pixels at the edges cannot fake a head-on reading.
+        """
         y_center = int(self._target_im_size * self.lane_search_y_ratio)
         y_start = y_center - 20
         y_end = y_center + 20
@@ -212,9 +231,11 @@ class DetectLaneNode:
         target_pixels = np.where(mask[y_start:y_end, :] == class_idx)[1]
 
         if len(target_pixels) > 10:
-            return np.median(target_pixels), True
+            lo, hi = np.percentile(target_pixels, [10, 90])
+            spread = float(hi - lo) / float(self._target_im_size)
+            return np.median(target_pixels), True, spread
 
-        return fallback_value, False
+        return fallback_value, False, 0.0
 
     def cbFindLane(self, image_msg):
         """Drop frames that arrive while segmentation is still running.
@@ -284,17 +305,23 @@ class DetectLaneNode:
         pred_mask = self.remove_duckies_from_mask(pred_mask)
 
         # 3. Lane Center Calculation (Class 1 = White, Class 2 = Yellow) 
-        center_white, white_valid = self.get_x_from_mask(
+        center_white, white_valid, white_spread = self.get_x_from_mask(
             pred_mask,
             class_idx=1,
             fallback_value=self.white_fallback
         )
 
-        center_yellow, yellow_valid = self.get_x_from_mask(
+        center_yellow, yellow_valid, yellow_spread = self.get_x_from_mask(
             pred_mask,
             class_idx=2,
             fallback_value=self.yellow_fallback
         )
+
+        # A head-on line is a wall, not a lane edge. Its reported x is meaningless
+        # (the median of a smear), so the controller is told about the geometry
+        # rather than being handed a position it would trust.
+        white_head_on = bool(white_valid and white_spread >= self.head_on_spread)
+        yellow_head_on = bool(yellow_valid and yellow_spread >= self.head_on_spread)
 
         # Crossed lines (white at or left of yellow).
         #
@@ -336,6 +363,10 @@ class DetectLaneNode:
             # "was this line seen" is per-colour and above; "valid" is narrower - it
             # gates the lane_center/error signal only, which is inverted when crossed.
             "lines_crossed": bool(lines_crossed),
+            "white_head_on": white_head_on,
+            "yellow_head_on": yellow_head_on,
+            "white_spread": float(white_spread),
+            "yellow_spread": float(yellow_spread),
             "valid": bool(center_white > center_yellow and (yellow_valid or white_valid))
         })
 

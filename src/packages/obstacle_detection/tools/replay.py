@@ -113,6 +113,8 @@ def replay(events, params):
                 # After update_lane_borders, which sets the yellow_seen/white_seen
                 # flags this depends on.
                 planner.set_lines_crossed(t, bool(data.get("lines_crossed", False)))
+                planner.set_head_on(bool(data.get("white_head_on", False))
+                                    or bool(data.get("yellow_head_on", False)))
                 got_borders = True
             elif ev["kind"] == "duckie_BB":
                 ducks = data.get("duckies", [])

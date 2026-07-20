@@ -66,6 +66,11 @@ WRONG_WAY_CLEAR_FRAMES = 2
 # several full sweeps. If no clean view has appeared by then the detection is the
 # problem and more rotation will not fix it - stop, rather than spin forever.
 WRONG_WAY_MAX_ROTATE = 5.0
+# Consecutive frames a marking must read as square-on before the robot treats it as
+# a wall. Short: unlike wrong_way this is not latched and clears as soon as rotating
+# makes the line look vertical again, so the cost of a false positive is one or two
+# frames of rotation rather than an aborted manoeuvre.
+HEAD_ON_FRAMES = 3
 EPS = 1e-3
 
 # Measured on the course: bbox-bottom ymax -> distance from the robot's front, cm.
@@ -176,6 +181,12 @@ class GapPlanner:
         #
         # Debounced, because a single crossed frame also happens transiently when the
         # bot is skewed mid-manoeuvre, and reacting to that would spin it up spuriously.
+        # Head-on markings. A line the robot is driving at orthogonally is a wall,
+        # not a lane edge - and its reported x is the median of a horizontal smear,
+        # i.e. confidently wrong. Debounced like the other line signals.
+        self.head_on = False
+        self.head_on_streak = 0
+
         self.lines_crossed = False
         self.wrong_way = False
         self.crossed_streak = 0
@@ -226,6 +237,17 @@ class GapPlanner:
     # ---- sensor setters -----------------------------------------------------
     def update_lane_error(self, error):
         self.lane_error = clamp(float(error), -1.0, 1.0)
+
+    def set_head_on(self, head_on):
+        """Debounced 'a marking is square across our path'.
+
+        Deliberately NOT latched, unlike wrong_way: rotating away from a wall makes
+        it look progressively more vertical, so the condition clears itself as the
+        manoeuvre succeeds. The robot ends up parallel to the marking, which is the
+        behaviour wanted at the bulb boundary.
+        """
+        self.head_on_streak = self.head_on_streak + 1 if head_on else 0
+        self.head_on = self.head_on_streak > HEAD_ON_FRAMES
 
     def set_lines_crossed(self, now, crossed):
         """Fold in the detector's crossed-order flag, debounced, and LATCH it.
@@ -539,7 +561,12 @@ class GapPlanner:
         # has swung round far enough the colours uncross, wrong_way clears, and normal
         # lane following resumes. Routed through blocked_front so it reuses the escape
         # dwell and the never-freeze guard rather than adding a fourth state.
-        blocked_front = front_block or self.wrong_way or (not passable and not committed)
+        # A marking square across the path blocks the robot exactly like an obstacle
+        # does, and for the same reason there is no way through it. Rotating turns it
+        # edge-on, which both clears the condition and leaves the robot travelling
+        # parallel to the marking instead of over it.
+        blocked_front = (front_block or self.wrong_way or self.head_on
+                         or (not passable and not committed))
         want_avoid = goal_blocked or front_slow or unknown_geometry
 
         # --- transitions (single owner) --------------------------------------
@@ -571,6 +598,8 @@ class GapPlanner:
             target_x = goal_x
             if self.wrong_way:
                 reason = "escape_rotate_wrong_way"
+            elif self.head_on:
+                reason = "escape_rotate_head_on_line"
             else:
                 reason = "escape_rotate_relaxed" if relax < 1.0 else "escape_rotate_no_gap"
         elif self.state == AVOID:
@@ -737,6 +766,7 @@ class GapPlanner:
             "lane_source": goal_source,
             "yellow_seen": self.yellow_seen,
             "white_seen": self.white_seen,
+            "head_on": self.head_on,
             "lines_crossed": self.lines_crossed,
             "wrong_way": self.wrong_way,
             "crossed_streak": self.crossed_streak,
@@ -893,6 +923,8 @@ class ControlLaneNode:
             # lane. The detector has always published this; nothing consumed it.
             self.planner.set_lines_crossed(
                 rospy.Time.now().to_sec(), bool(data.get("lines_crossed", False)))
+            self.planner.set_head_on(bool(data.get("white_head_on", False))
+                                     or bool(data.get("yellow_head_on", False)))
             self.got_borders = True
         except Exception as e:
             rospy.logwarn_throttle(1.0, f"[{self.node_name}] bad lane_borders: {e}")
