@@ -11,7 +11,9 @@ import cv2
 import numpy as np
 import rospy
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Float64, String
+from std_msgs.msg import Float64, Int32, String
+
+from custom_enums import DriveMode
 import torch
 import segmentation_models_pytorch as smp
 import torchvision.transforms.functional as TF
@@ -27,6 +29,33 @@ class DetectLaneNode:
         self.lane_search_y_ratio = self.config["lane_search_y_ratio"]
         self._target_im_size = self.config["target_im_size"]
         self.current_dynamic_y = self._target_im_size * self.lane_search_y_ratio
+
+        # While stopped at a line or crossing, look at the very bottom of the
+        # image. Anything further up is on the far side of the intersection and
+        # belongs to a road the bot is not on.
+        self.crossing_search_y_ratio = self.config.get("crossing_search_y_ratio", 0.99)
+
+        # Process one frame in N. The camera runs at 30 Hz and one pass costs
+        # ~20 ms, so frame_skip=1 gives a 30 Hz control loop with headroom to
+        # spare. This is the effective control rate: the PID runs once per
+        # frame published here, so lowering this is the only way to steer more
+        # often. The controller's derivative term is low-pass filtered
+        # (control_wheels) so it stays stable across rates.
+        self.frame_skip = max(1, int(self.config.get("frame_skip", 1)))
+        self.report_timing_every = float(self.config.get("report_timing_every", 10.0))
+        self._last_timing_report = 0.0
+
+        # The segmentation model over-reports red on some surfaces, which shows
+        # up as phantom stop lines. Requiring the pixels to also be red in HSV
+        # removes those without needing to retrain.
+        # uint8 because that is what cv2.inRange expects; a plain list would
+        # arrive as int64 and raise.
+        self.hsv_red_bounds = [
+            (np.array(self.config.get("hsv_red_lower1", [0, 100, 80]), dtype=np.uint8),
+             np.array(self.config.get("hsv_red_upper1", [10, 255, 255]), dtype=np.uint8)),
+            (np.array(self.config.get("hsv_red_lower2", [165, 100, 80]), dtype=np.uint8),
+             np.array(self.config.get("hsv_red_upper2", [180, 255, 255]), dtype=np.uint8)),
+        ]
         
         self._vehicle_name = os.environ.get("VEHICLE_NAME", "default_robot")
 
@@ -44,22 +73,34 @@ class DetectLaneNode:
         self.white_fallback = int(self._target_im_size * 0.95)
         self.yellow_fallback = int(self._target_im_size * 0.05)
 
-        # Initialize PyTorch Model
+        # Initialize PyTorch Model. Loading and tracing takes a few seconds and
+        # is reported in one line at the end, not step by step.
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        rospy.loginfo(f"[{node_name}] Initializing Segmentation Model on {self.device}...")
+        load_started = rospy.Time.now().to_sec()
         self._init_model()
+        self._model_load_seconds = rospy.Time.now().to_sec() - load_started
         
         # Setup ROS Topics
         base_topic = f"/{self._vehicle_name}"
 
+        # buff_size matters here: frames are ~40 KB and rospy's default
+        # receive buffer is 64 KB, so under any load the socket backlogs and
+        # this node starts steering on stale images. detect_signs already
+        # subscribes to the same topic with a large buffer.
         self.sub_image_original = rospy.Subscriber(
-            f"{base_topic}/camera_node/image/compressed", 
-            CompressedImage, 
-            self.cbFindLane, 
-            queue_size=1
+            f"{base_topic}/camera_node/image/compressed",
+            CompressedImage,
+            self.cbFindLane,
+            queue_size=1,
+            buff_size=2**24
         )
         self.pub_lane = rospy.Publisher(
             f"{base_topic}/detect/lane", Float64, queue_size=1
+        )
+
+        # The drive mode decides how far ahead it is safe to look.
+        self.sub_mode = rospy.Subscriber(
+            f"{base_topic}/switch/mode", Int32, self._cb_mode, queue_size=1
         )
 
         self.pub_lane_borders = rospy.Publisher(
@@ -82,7 +123,10 @@ class DetectLaneNode:
             f"{base_topic}/debug/lane_red", CompressedImage, queue_size=1
         )
 
-        rospy.loginfo(f"[{node_name}] Ready and listening to {base_topic}/camera_node/image/compressed")
+        rospy.loginfo("detect_lane ready: %s, model loaded in %.1fs, "
+                      "1-in-%d frames (%d Hz control)",
+                      self.device, self._model_load_seconds,
+                      self.frame_skip, round(30.0 / self.frame_skip))
 
     def _load_config(self):
         """Loads configuration parameters from JSON."""
@@ -123,12 +167,28 @@ class DetectLaneNode:
         torch.set_num_threads(4) 
         
         # JIT Traceing compilation
-        rospy.loginfo("Compiling model via TorchScript...")
         with torch.no_grad():
             dummy_input = torch.randn(1, 3, self._target_im_size, self._target_im_size).to(self.device)
             dummy_input = dummy_input.to(memory_format=torch.channels_last)
             self.model = torch.jit.trace(self.model, dummy_input)
-        rospy.loginfo("Model compiled successfully!")
+
+    def _cb_mode(self, msg):
+        """
+        Picks the search band for the current drive mode.
+
+        While stopped at a line or crossing, the only lane markings that mean
+        anything are directly in front of the wheels; everything further up
+        belongs to roads on the other side of the intersection.
+        """
+        try:
+            mode = DriveMode(msg.data)
+        except ValueError:
+            return
+
+        if mode in (DriveMode.STOPPED, DriveMode.CROSSING_INTERSECTION):
+            self.lane_search_y_ratio = self.crossing_search_y_ratio
+        else:
+            self.lane_search_y_ratio = self.config["lane_search_y_ratio"]
 
     def get_x_from_mask(self, mask, class_idx, fallback_value, search_y_center):
         """
@@ -151,13 +211,18 @@ class DetectLaneNode:
         return fallback_value
 
     def cbFindLane(self, image_msg):
-        """Processes incoming camera frames to calculate lane error."""
+        """
+        Frame gate: throttles, guards against re-entry, and guarantees the
+        busy flag is cleared.
 
-        # Start inference timer
-        start_time = rospy.Time().now().to_sec()
-
+        The try/finally is load-bearing. is_running is what stops a second
+        frame being processed while one is in flight, so if a frame ever
+        raised, the flag would stay set and lane detection would stop for the
+        rest of the run -- silently, with the robot still driving on the last
+        error it computed.
+        """
         # Throttle processing if needed
-        if self.counter <= 1:
+        if self.counter < self.frame_skip - 1:
             self.counter += 1
             return
 
@@ -167,12 +232,24 @@ class DetectLaneNode:
         self.is_running = True
         self.counter = 0
 
+        start_time = rospy.Time().now().to_sec()
+
+        try:
+            self._process_frame(image_msg)
+        except Exception as error:
+            rospy.logerr_throttle(5.0, f"Lane detection failed on a frame: {error}")
+        finally:
+            self._report_timing(start_time, rospy.Time().now().to_sec())
+            self.is_running = False
+
+    def _process_frame(self, image_msg):
+        """Runs segmentation on one frame and publishes the lane error."""
+
         # Decode Image
         np_arr = np.frombuffer(image_msg.data, np.uint8)
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
         if cv_image is None:
-            self.is_running = False
             return
 
         # 1. Preprocessing
@@ -203,6 +280,16 @@ class DetectLaneNode:
         with torch.no_grad():
             output = self.model(tensor_img)
             pred_mask = torch.argmax(output.squeeze(), dim=0).cpu().numpy()
+
+        # Drop pixels the model calls red that are not red in HSV. These
+        # phantom stop lines otherwise trigger a full stop on open road.
+        hsv_img = cv2.cvtColor(resized_img, cv2.COLOR_RGB2HSV)
+        hsv_red_mask = np.zeros(hsv_img.shape[:2], dtype=np.uint8)
+        for lower, upper in self.hsv_red_bounds:
+            hsv_red_mask = cv2.bitwise_or(hsv_red_mask,
+                                          cv2.inRange(hsv_img, lower, upper))
+
+        pred_mask[(pred_mask == 3) & (hsv_red_mask == 0)] = 0
 
         mask_red = (pred_mask == 3).astype(np.uint8)
         y_coords_red, x_coords_red = np.where(mask_red > 0)
@@ -240,6 +327,11 @@ class DetectLaneNode:
             else:
                 center_white = self.white_fallback
 
+        # A fallback value means the line was not actually seen. switch_control
+        # uses these to tell when the bot is back in a lane after a crossing.
+        white_detected = bool(center_white != self.white_fallback)
+        yellow_detected = bool(center_yellow != self.yellow_fallback)
+
         lane_center = (center_white + center_yellow) / 2.0
 
         # Map center to an error [-1, 1] and publish
@@ -254,6 +346,8 @@ class DetectLaneNode:
             "white_x": float(center_white / self._target_im_size),
             "lane_center_x": float(lane_center / self._target_im_size),
             "valid_lanes": bool(center_white > center_yellow),
+            "white_detected": white_detected,
+            "yellow_detected": yellow_detected,
             "red_detected": red_detected,
             "red_distance_y": float(closest_red_y / self._target_im_size), # Normalized [0, 1]
             "red_angle": red_angle
@@ -275,9 +369,33 @@ class DetectLaneNode:
         self.debug_img_yellow = (pred_mask == 2).astype(np.uint8) * 255
         self.debug_img_red = (pred_mask == 3).astype(np.uint8) * 255
 
-        end_time = rospy.Time().now().to_sec()
+    def _report_timing(self, start_time, end_time):
+        """
+        Periodically logs how long a frame takes.
 
-        self.is_running = False
+        Without this the pipeline can slow down -- a busy CPU, a bigger model --
+        and the only symptom is worse driving, because every decision is made on
+        an older image than it looks.
+        """
+        if self.report_timing_every <= 0.0:
+            return
+
+        now = end_time
+
+        if now - self._last_timing_report < self.report_timing_every:
+            return
+
+        self._last_timing_report = now
+        elapsed_ms = (end_time - start_time) * 1000.0
+        budget_ms = 1000.0 * self.frame_skip / 30.0
+
+        message = (f"lane pipeline {elapsed_ms:.0f} ms/frame "
+                   f"(budget {budget_ms:.0f} ms at 1-in-{self.frame_skip})")
+
+        if elapsed_ms > budget_ms:
+            rospy.logwarn(message + " -- falling behind, images are stale")
+        else:
+            rospy.loginfo(message)
 
     def run_debug(self):
         """Loops continuously to publish debug visualizers if requested."""

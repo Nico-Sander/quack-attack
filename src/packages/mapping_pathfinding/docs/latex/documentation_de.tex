@@ -1,0 +1,306 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[ngerman]{babel}
+\usepackage[margin=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+% Platzhalter-Box fuer eine Abbildung, die noch von Hand erstellt werden muss.
+% #1 = Bildunterschrift; der Inhalt beschreibt, was hineingehoert.
+\newsavebox{\placebox}
+\newenvironment{placeholder}[1]
+  {\par\medskip\noindent\begin{center}
+   \setlength{\fboxsep}{6pt}%
+   \begin{lrbox}{\placebox}%
+   \begin{minipage}{0.88\linewidth}
+   \centering\textbf{[ PLATZHALTER: #1 ]}\\[0.8em]
+   \raggedright\footnotesize}
+  {\end{minipage}\end{lrbox}\fbox{\usebox{\placebox}}\end{center}\medskip}
+
+\title{\textbf{mapping\_pathfinding}\\[0.3em]
+       \large Kartierung, Lokalisierung und Pfadplanung f\"ur die Duckiebot-City-Challenge}
+\author{Nico Sander}
+\date{\today}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.2ex plus .5ex}{0.8ex}
+\titlespacing*{\subsection}{0pt}{1ex plus .3ex}{0.5ex}
+\setlength{\parskip}{0.4ex}
+
+\begin{document}
+\maketitle
+
+\section{Systemüberblick}
+
+\texttt{mapping\_pathfinding} ist ein ROS-1-Paket (Noetic), mit dem ein
+Duckiebot eine kleine Stadt aus Straßen und Kreuzungen selbstständig erkundet,
+eine Karte davon aufbaut und anschließend eine angesagte Folge von Toren in der
+schnellsten gefundenen Reihenfolge abfährt.
+
+Die Mission besteht aus zwei Phasen:
+
+\begin{description}
+  \item[MAPPING (ungestoppt)] Der Bot fährt jede Straße der Stadt mindestens
+    einmal ab. Dabei erfasst er, welches \emph{Tor} (ein AprilTag über einer
+    Straße) zu welcher Straße gehört, und misst, wie lange er für jede Straße
+    und jedes Abbiegemanöver tatsächlich braucht.
+  \item[GATE\_RUN (gestoppt)] Die Torreihenfolge wird vor Ort als Liste von
+    Tag-IDs angesagt. Der Bot wird an einer bekannten Straße abgesetzt, plant
+    anhand der Karte und der gemessenen Zeiten aus der Mapping-Phase eine Route
+    durch die Tore in dieser Reihenfolge und fährt sie ab.
+  \item[DONE] Nach dem letzten Tor hält der Bot an und meldet die benötigte
+    Zeit.
+\end{description}
+
+Die Stadt wird als Graph modelliert: Knoten sind Kreuzungen, Kanten sind
+Straßen. Jede Kreuzung hat bis zu vier nummerierte \emph{Ports} (1--4), die
+zyklisch angeordnet sind -- für einen Bot, der über Port $p$ einfährt, liegt
+Port $p+1$ rechts und $p-1$ links. Da Wendemanöver verboten sind, wird nicht
+über Knoten geplant, sondern über gerichtete Zustände \texttt{(Knoten,
+Einfahrt-Port)} -- ``ich nähere mich dieser Kreuzung und bin über diesen Port
+eingefahren''. Dieser Zustand identifiziert zugleich die gerade befahrene
+Straße, was es dem Planer erlaubt, einzelne Straßen und Tore gezielt
+anzusteuern. Die Karte selbst liegt in einer einzigen JSON-Datei
+(\texttt{config/city.json}), die alle Nodes lesen -- es gibt also immer nur
+genau eine Definition der Stadt.
+
+Das Paket trennt bewusst zwischen dünnen ROS-Nodes und einem ROS-freien Kern:
+sämtliche Graph-, Planungs-, Zeitmess- und Filterlogik steckt in reinen
+Python-Modulen ohne ROS-Import. Dadurch ist der gesamte Entscheidungskern durch
+Offline-Unittests abgedeckt (derzeit 209), die ohne Roboter laufen.
+
+\begin{placeholder}{ROS-Node-Graph}
+  Ein Blockdiagramm des laufenden ROS-Graphen. Pro Node ein Kasten
+  (\texttt{detect\_lane}, \texttt{detect\_signs}, \texttt{detect\_intersection},
+  \texttt{switch\_control}, \texttt{control\_wheels},
+  \texttt{mapping\_pathplanning}, \texttt{visualization}, \texttt{dashboard}),
+  dazu Kamera und Radansteuerung als externe Kästen, verbunden durch Pfeile mit
+  dem jeweiligen Topic-Namen. Die wichtigen Kanten sind:
+  Kamera $\rightarrow$ \texttt{detect\_lane} und \texttt{detect\_signs};
+  \texttt{/detect/lane\_borders} $\rightarrow$ \texttt{detect\_intersection};
+  \texttt{/detect/intersection} und \texttt{/detect/sign} $\rightarrow$
+  \texttt{switch\_control}; \texttt{/switch/mode} und
+  \texttt{/switch/turn\_direction} $\rightarrow$ \texttt{control\_wheels}
+  \emph{und} $\rightarrow$ \texttt{mapping\_pathplanning};
+  \texttt{/detect/sign\_detections} $\rightarrow$
+  \texttt{mapping\_pathplanning}; und die Kante, die den Regelkreis schließt:
+  \texttt{/plan/turn\_command} $\rightarrow$ \texttt{switch\_control}.
+  Ebenfalls einzeichnen: \texttt{/mapping/state} $\rightarrow$
+  \texttt{visualization}.
+  Optisch hervorheben lohnt sich die Schichtung -- Wahrnehmung (links),
+  Verhalten (Mitte), Mission/Planung (rechts) -- und die Tatsache, dass die
+  Missionsschicht auf die Verhaltensschicht zurückwirkt. Ein Screenshot von
+  \texttt{rqt\_graph} tut es zur Not auch, eine handgezeichnete Version ist aber
+  deutlich lesbarer, weil sie die Debug-Topics weglassen kann.
+\end{placeholder}
+
+\section{Beschreibung der Kernkomponenten}
+
+\subsection{Wahrnehmung}
+
+\paragraph{\texttt{detect\_lane.py}} Segmentiert das Kamerabild mit einem
+PyTorch-U-Net in weiße Fahrbahnmarkierungen, gelbe Mittellinie und rote
+Haltelinien. Daraus berechnet der Node den Querabstandsfehler -- wie weit der
+Bot aus der Spurmitte steht -- und veröffentlicht ihn auf
+\texttt{/detect/lane}. Zusätzlich publiziert er die geometrischen Spurgrenzen
+(inklusive Position einer roten Linie im Bild) auf
+\texttt{/detect/lane\_borders} sowie Debug-Bilder für das Dashboard. Die
+gesamte Wahrnehmungspipeline läuft mit 30\,Hz auf dem Laptop, etwa 20\,ms pro
+Bild bei einem Budget von 33\,ms.
+
+\paragraph{\texttt{detect\_signs.py}} Erkennt AprilTags mit
+\texttt{pupil\_apriltags} und publiziert auf zwei Topics, weil die beiden
+Abnehmer Unterschiedliches brauchen. \texttt{/detect/sign} enthält nur die ID
+des nächstgelegenen Tags und ist ungefiltert -- \texttt{switch\_control} muss
+Kreuzungsschilder in jeder Größe sehen. \texttt{/detect/sign\_detections}
+enthält \emph{jede} Detektion mit Eckpunkten, Fläche in Pixeln und einer
+Annahme-/Verwerfen-Entscheidung; der Missions-Node braucht die Fläche, um zu
+unterscheiden, ob ein Tor auf der aktuellen Straße hängt oder erst hinter der
+Kreuzung.
+
+\paragraph{\texttt{detect\_intersection.py}} Ein kleiner Logik-Node, der aus der
+Spurgeometrie einen Kreuzungszustand ableitet: keine Kreuzung, Kreuzung nähert
+sich, Haltelinie erreicht. Das geschieht allein über die vertikale Position der
+erkannten roten Linie, ohne das Bild erneut anzufassen.
+
+\subsection{Verhalten und Aktorik}
+
+\paragraph{\texttt{switch\_control.py}} Der Verhaltensautomat. Er entscheidet,
+\emph{was der Bot gerade tut} -- Spur folgen, sich einer Kreuzung nähern, an der
+Haltelinie stehen oder die Kreuzung queren -- und veröffentlicht das als
+\texttt{/switch/mode} zusammen mit der Abbiegerichtung auf
+\texttt{/switch/turn\_direction}. Die Richtung kommt im Normalfall vom
+Missions-Node über \texttt{/plan/turn\_command}; ist dieses Kommando veraltet
+oder fehlt es, fällt der Node auf sein älteres Verhalten zurück und wählt die
+Richtung anhand des Kreuzungsschilds -- ein ausgefallener Missions-Node führt so
+zu degradiertem statt zu gar keinem Fahrverhalten. Kreuzungsquerungen sind
+geschlossen geregelt: das Manöver endet, sobald wieder Fahrbahnmarkierungen zu
+sehen sind, nicht wenn ein Timer abläuft -- die konfigurierte Dauer ist nur ein
+Timeout. Genau das macht den Stack tolerant dagegen, dass der Bot nicht exakt
+rechtwinklig an der Haltelinie steht.
+
+\paragraph{\texttt{control\_wheels.py}} Der einzige Node, der mit den Motoren
+spricht. Er übersetzt den aktuellen Fahrmodus in Radkommandos: beim Spurfolgen
+läuft ein PID-Regler auf dem Querabstandsfehler (mit tiefpassgefiltertem
+D-Anteil, damit er bei 30\,Hz stabil bleibt), während einer Querung fährt er
+einen festen Bogen für die kommandierte Richtung, bis \texttt{switch\_control}
+das Manöver beendet. Gemessene Latenz von Bildaufnahme bis Kommando: rund
+75\,ms.
+
+\subsection{Mission, Kartierung und Planung}
+
+\paragraph{\texttt{mapping\_pathplanning.py}} Der Node, dem die Mission gehört,
+und die größte Einzelkomponente des Pakets. Er erledigt vier Dinge. \emph{(1)
+Lokalisierung:} Koppelnavigation auf dem Graphen -- die geglaubte Position
+rückt um eine Straße weiter, sobald \texttt{switch\_control} eine
+abgeschlossene Querung meldet. \emph{(2) Kartierung:} er schreibt Tore auf die
+Straßen, auf denen sie gesehen wurden. \emph{(3) Planung:} nach jeder Querung
+wird die gesamte Restroute neu geplant -- bei dieser Stadtgröße billig, und es
+bedeutet, dass eine korrigierte Position sofort zu einer korrigierten Route
+führt. \emph{(4) Kommandieren:} er publiziert das nächste Abbiegekommando auf
+\texttt{/plan/turn\_command} und schließt damit den Regelkreis. Zusätzlich
+veröffentlicht er den vollständigen Missionszustand (Karte, Tore, Pfad,
+Position, Phase) als JSON auf \texttt{/mapping/state} und bietet einen Service
+\texttt{start\_gate\_run} für den Phasenwechsel an.
+
+\paragraph{\texttt{planner.py} (ROS-frei)} Dijkstra über die gerichteten
+Zustände \texttt{(Knoten, Einfahrt-Port)}. Wendemanöver werden nicht durch eine
+Prüfung verboten, sondern sind strukturell nicht ausdrückbar, weil keine
+Richtungstabelle einen Port auf sich selbst abbildet. Kanten sind mit einer
+geschätzten Dauer gewichtet -- ein Zug kostet \texttt{Halt + Abbiegen +
+Straße} -- damit die Suche wirklich schnellere und nicht bloß kürzere Routen
+bevorzugt; eine Rechtskurve ist deutlich billiger als eine Linkskurve. In der
+Mapping-Phase treibt dasselbe Modul eine gierige Erkundung nach der jeweils
+nächstgelegenen noch nicht befahrenen Straße.
+
+\paragraph{\texttt{city\_map.py} (ROS-frei)} Der Graph selbst: Port-Geometrie,
+Laden und Validieren von \texttt{city.json} sowie \texttt{GraphMap}, der
+Live-Kartenzustand, der festhält, welche Straßen befahren wurden und welches Tor
+auf welcher Straße hängt. Kantenschlüssel sind richtungsunabhängig
+(\texttt{A1\_\_B1} von beiden Enden), womit sich ``ein Tor gilt für die ganze
+Straße'' von selbst ergibt.
+
+\paragraph{\texttt{gate\_detection.py} (ROS-frei)} Entscheidet, welchen
+Tor-Sichtungen geglaubt werden darf. Ein Tor wird dauerhaft auf eine Straße
+geschrieben -- der erste Eintrag gewinnt -- weil die Kamera über die Kreuzung
+hinaus sieht und spätere Sichtungen aus größerer Entfernung und schlechterem
+Winkel stammen. Drei Filter stehen vor diesem unwiderruflichen Schreibvorgang:
+im Stand und während einer Querung wird gar nicht kartiert; die Fläche des Tags
+muss über einem aus aufgezeichneten Fahrten kalibrierten Schwellwert liegen
+(\texttt{gate\_min\_area}, derzeit 900\,px$^2$); und dasselbe Tag muss über
+mehrere aufeinanderfolgende Bilder auf derselben Straße gesehen werden.
+
+\paragraph{\texttt{run\_timing.py} (ROS-frei)} Misst, wie lange jede Straße und
+jedes Abbiegemanöver tatsächlich dauert. Als gemeinsame Zeitbasis dienen die von
+\texttt{switch\_control} publizierten Fahrmodus-Übergänge, sodass sich die
+gemessenen Teile lückenlos und überlappungsfrei zu einem vollen Zug
+zusammensetzen. Die Mapping-Phase ist ungestoppt, dort zu messen kostet also
+nichts; der gestoppte Lauf wird anschließend gegen reale Zahlen statt gegen eine
+pauschale Schätzung geplant. Mehrfachmessungen einer Straße werden über den
+Median zusammengefasst.
+
+\paragraph{\texttt{crossing.py} und \texttt{graph\_layout.py} (ROS-frei)} Zwei
+kleine Hilfsmodule: das erste entscheidet, wann eine Kreuzungsquerung beendet
+ist (Markierungen wieder sichtbar, nach einer minimalen Blindzeit), das zweite
+berechnet die Zeichengeometrie der Karte -- mit der getesteten Eigenschaft, dass
+sich gezeichnete Straßen außerhalb eines Knotens niemals kreuzen dürfen.
+
+\subsection{Bedienung und Visualisierung}
+
+\paragraph{\texttt{visualization.py}} Ein Live-Fenster, das die drei von der
+Challenge geforderten Dinge sichtbar macht: die aufgebaute Karte (Straßen mit
+den darauf gefundenen Toren), den geplanten Pfad (gestrichelt, mit
+Schrittnummern) und die geglaubte Position des Bots (aktuelle Straße
+hervorgehoben, Ring an der nächsten Kreuzung).
+
+\paragraph{\texttt{dashboard.py}} Ein Debug-Fenster für die Wahrnehmung, das
+Rohbild, Segmentierungsmasken und die AprilTag-Rahmen samt gemessener Fläche in
+einer einzigen Ansicht kachelt.
+
+\paragraph{\texttt{mission\_tui.py} / \texttt{mission\_setup.py}} Ein
+menügeführtes Frontend für die gesamte Session. Der strukturell wichtige Punkt:
+\emph{ein} \texttt{roslaunch} bleibt über beide Phasen hinweg am Leben -- Karte,
+Tore und gemessene Zeiten liegen im Missions-Node, ein Neustart zwischen den
+Phasen würde sie verwerfen. Die TUI besitzt daher den Launch-Prozess und
+wechselt die Phase über Parameter und den Service-Aufruf.
+\texttt{mission\_setup.py} validiert die eingegebenen Antworten (vor allem die
+Startposition, die vor dem Start gegen den Stadtgraphen geprüft wird) und baut
+das Launch-Kommando zusammen.
+
+\section{Zustands- und Ablaufdiagramme}
+
+\begin{placeholder}{Zustandsdiagramm der Missionsphasen}
+  Der übergeordnete Missionsautomat von \texttt{mapping\_pathplanning.py} mit
+  drei Zuständen: \textbf{MAPPING}, \textbf{GATE\_RUN} und \textbf{DONE}.
+  Einzuzeichnende Übergänge: MAPPING $\rightarrow$ GATE\_RUN, beschriftet mit
+  ``alle Straßen befahren \emph{und} alle Tore gesehen $\rightarrow$ Halt an der
+  Haltelinie, warten auf den Service \texttt{start\_gate\_run}''; GATE\_RUN
+  $\rightarrow$ DONE, beschriftet mit ``letztes Tor der angesagten Reihenfolge
+  passiert''. Deutlich markieren, dass zwischen MAPPING und GATE\_RUN ein
+  \emph{harter Stopp} liegt, während dessen der Bot physisch umgesetzt wird, und
+  dass der Übergang aus MAPPING verlangt, dass die Tore tatsächlich
+  \emph{gesehen} wurden -- nicht nur, dass die Straßen befahren wurden.
+\end{placeholder}
+
+\begin{placeholder}{Verhaltensautomat (\texttt{switch\_control})}
+  Der Fahrmodus-Automat: \textbf{LANE\_FOLLOWING} $\rightarrow$
+  \textbf{APPROACHING} $\rightarrow$ \textbf{STOPPED} $\rightarrow$
+  \textbf{CROSSING} $\rightarrow$ zurück zu LANE\_FOLLOWING. Jeden Übergang mit
+  seinem Auslöser beschriften: rote Linie oberhalb des Schwellwerts erkannt;
+  Haltelinie erreicht; Haltedauer abgelaufen \emph{und} Abbiegekommando
+  vorhanden; und -- der wichtigste -- die Querung endet, sobald \emph{wieder
+  Fahrbahnmarkierungen sichtbar} sind, wobei die konfigurierte Abbiegedauer nur
+  als Timeout wirkt. Zusätzlich das \texttt{HALT}-Kommando als Übergang in einen
+  Wartezustand einzeichnen sowie \texttt{/plan/resume\_driving} als jene Kante,
+  die einen umgesetzten Bot ohne Querungsmanöver zurück in LANE\_FOLLOWING
+  bringt. Es lohnt sich, im selben Diagramm zu annotieren, welches Zeitintervall
+  \texttt{run\_timing.py} als ``Abbiegezeit'' und welches als ``Straßenzeit''
+  misst.
+\end{placeholder}
+
+\begin{placeholder}{Ablaufdiagramm der Tor-Sichtungsentscheidung}
+  Ein Flussdiagramm für eine einzelne eingehende Detektion aus
+  \texttt{/detect/sign\_detections}, das entweder in ``Tor auf Straße
+  schreiben'' oder in ``verwerfen'' mündet. Entscheidungsrauten der Reihe nach:
+  Fährt der Bot überhaupt (nicht gestoppt, nicht querend)? Ist die Tag-ID
+  überhaupt ein Tor? Ist ihre Fläche $\geq$ \texttt{gate\_min\_area}? Wurde
+  dasselbe Paar (Straße, Tor) über \texttt{gate\_confirm\_frames}
+  aufeinanderfolgende Detektionen gesehen? Trägt diese Straße bereits ein Tor
+  (falls ja: verwerfen -- der erste Eintrag ist endgültig)? Dieses Diagramm ist
+  die beste Stelle, um zu zeigen, \emph{warum} es jeden Filter gibt; eine
+  einzeilige Anmerkung pro Raute genügt.
+\end{placeholder}
+
+\begin{placeholder}{Regelkreis / Sequenz an einer Kreuzung}
+  Ein Sequenzdiagramm über eine Kreuzung hinweg, mit den Spuren
+  Kamera $\rightarrow$ \texttt{detect\_*} $\rightarrow$ \texttt{switch\_control}
+  $\rightarrow$ \texttt{control\_wheels} und \texttt{mapping\_pathplanning} als
+  paralleler Spur. Der Ablauf: rote Linie erkannt, Halt, Missions-Node plant neu
+  und publiziert das Abbiegekommando, \texttt{switch\_control} geht mit dieser
+  Richtung in CROSSING, \texttt{control\_wheels} fährt den Bogen,
+  Fahrbahnmarkierungen tauchen wieder auf, \texttt{switch\_control} meldet die
+  abgeschlossene Querung, der Missions-Node rückt seine geglaubte Position um
+  eine Straße weiter und plant neu. Dieses Diagramm macht den geschlossenen
+  Regelkreis lesbar -- und die 30-Hz-Innenschleife innerhalb der äußeren
+  Schleife pro Kreuzung.
+\end{placeholder}
+
+\section{Konfiguration und Tests}
+
+Alle abgestimmten Konstanten liegen in \texttt{config/config.json} (Zeiten,
+PID-Parameter, Schwellwerte, Kostenmodell des Planers); die Karte ist
+\texttt{config/city.json}, die rein kosmetische Zuordnung Tor-ID $\rightarrow$
+Farbe steht in \texttt{config/gates.json}. Launch-Argumente überschreiben
+ausgewählte Werte für einen einzelnen Lauf.
+
+Da der Entscheidungskern ROS-frei ist, wird er offline verifiziert:
+Port-Geometrie und die Invariante ``kein Wendemanöver'', Validierung der Stadt,
+die Filter für Tor-Sichtungen, Erreichbarkeit im Planer aus jedem Startzustand,
+alle Torreihenfolgen aus allen Startzuständen, gierige Abdeckung, vollständige
+Missionssimulationen und synthetische Gitterstädte. Zusätzlich betreibt
+\texttt{launch/simulate.launch} den echten Missions-Node gegen einen simulierten
+Fahrer und testet damit die tatsächliche ROS-Schicht -- Topics, Timer, den
+Phasenwechsel -- ohne Kamera, Motoren oder Roboter.
+
+\end{document}

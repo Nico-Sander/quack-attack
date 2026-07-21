@@ -1,0 +1,28 @@
+{
+  "description": [
+    "Single source of truth for gate AprilTag IDs.",
+    "",
+    "Per the challenge, gates carry tags 5-13 while 1-4 stay reserved for the",
+    "intersection signs. The gate ORDER for the timed run is announced on site",
+    "and given as tag IDs (see launch arg 'gate_order') - it is never derived",
+    "from colour, so the colours below are purely cosmetic: they make the logs",
+    "and the visualization readable. Any tag may physically be any colour.",
+    "",
+    "'colour' is the human-readable name used in logs, 'hex' is what",
+    "visualization.py draws. Consumers must treat this file as advisory: an",
+    "unknown ID still maps to a usable fallback."
+  ],
+  "gate_id_range": [5, 13],
+  "gates": {
+    "5":  {"colour": "pink",   "hex": "#E5399B"},
+    "6":  {"colour": "green",  "hex": "#2A9D8F"},
+    "7":  {"colour": "blue",   "hex": "#4C9BE8"},
+    "8":  {"colour": "orange", "hex": "#F4A261"},
+    "9":  {"colour": "purple", "hex": "#9B5DE5"},
+    "10": {"colour": "yellow", "hex": "#FFD400"},
+    "11": {"colour": "cyan",   "hex": "#22B8CF"},
+    "12": {"colour": "red",    "hex": "#E8483C"},
+    "13": {"colour": "lime",   "hex": "#8AC926"}
+  },
+  "unknown_gate_hex": "#999999"
+}

@@ -1,0 +1,94 @@
+<?xml version="1.0"?>
+<!--
+  Full mission over real ROS, without the robot.
+
+  Runs the mapping node, the visualization and a fake driver that obeys
+  /plan/turn_command. Nothing from the perception or driving stack is started,
+  so this needs no camera, no motors and no Duckiebot; only a roscore.
+
+  Watch the visualization window: the bot should explore every street, then
+  drive the gate order once it is given.
+
+    # mapping phase, gates on three streets
+    roslaunch mapping_pathfinding simulate.launch
+
+    # straight into a gate run
+    roslaunch mapping_pathfinding simulate.launch \
+        mission_phase:=GATE_RUN gate_order:=7,5,6
+
+    # map, then run the gates automatically when mapping completes
+    roslaunch mapping_pathfinding simulate.launch \
+        gate_order:=7,5,6 auto_start_gate_run:=true
+-->
+<launch>
+
+  <arg name="veh" default="$(optenv VEHICLE_NAME default_robot)"/>
+
+  <arg name="city_path" default="$(find mapping_pathfinding)/config/city.json"/>
+  <arg name="gates_path" default="$(find mapping_pathfinding)/config/gates.json"/>
+
+  <arg name="mission_phase" default="MAPPING"/>
+  <arg name="start_edge" default="A,1,B,1"/>
+  <arg name="gate_order" default=""/>
+  <arg name="gate_run_start_edge" default=""/>
+  <arg name="strict_gate_order" default="false"/>
+  <arg name="auto_start_gate_run" default="false"/>
+  <arg name="force_turn" default="NONE"/>
+
+  <arg name="visualization" default="true"/>
+
+  <!-- Which street carries which gate tag, as edge_key:tag pairs. Defaults to
+       the layout used by the offline mission tests. -->
+  <arg name="gates" default="A1__B1:5,B3__C4:6,A3__C1:7"/>
+  <arg name="step_time" default="0.4"
+       doc="Seconds per drive-mode state. Lower runs faster."/>
+  <arg name="moves" default="30"
+       doc="Maximum simulated intersections before giving up."/>
+  <arg name="obey_planner" default="true"
+       doc="false makes the fake driver turn at random, to check the mapping
+            node copes with turns it did not ask for."/>
+  <arg name="halt_timeout" default="8.0"
+       doc="How long the fake driver waits at a commanded halt before giving
+            up. Raise it to have time to start the gate run by hand, the way
+            the real two-phase workflow works."/>
+
+  <group ns="$(arg veh)">
+
+    <node name="mapping_pathplanning_node" pkg="mapping_pathfinding"
+          type="mapping_pathplanning.py" output="screen">
+      <param name="city_path" value="$(arg city_path)"/>
+      <param name="gates_path" value="$(arg gates_path)"/>
+      <param name="start_edge" value="$(arg start_edge)"/>
+      <param name="mission_phase" value="$(arg mission_phase)"/>
+      <param name="gate_order" value="$(arg gate_order)"/>
+      <param name="gate_run_start_edge" value="$(arg gate_run_start_edge)"/>
+      <param name="strict_gate_order" value="$(arg strict_gate_order)"/>
+      <param name="auto_start_gate_run" value="$(arg auto_start_gate_run)"/>
+      <param name="force_turn" value="$(arg force_turn)"/>
+      <!-- The fake driver announces a gate once per street, so the
+           re-detection cooldown only gets in the way here. -->
+      <param name="gate_cooldown" value="0.0"/>
+    </node>
+
+    <node name="mapping_visualization_node" pkg="mapping_pathfinding"
+          type="visualization.py" output="screen" if="$(arg visualization)">
+      <param name="city_path" value="$(arg city_path)"/>
+      <param name="gates_path" value="$(arg gates_path)"/>
+    </node>
+
+    <!-- Deliberately not required="true": when the fake driver finishes, that
+         would tear down the whole launch and close the visualization window
+         with it, right when there is a finished map and route worth looking
+         at. Ctrl-C when you are done inspecting. -->
+    <node name="simulated_driver" pkg="mapping_pathfinding"
+          type="simulate_drive.py" output="screen">
+      <param name="gates" value="$(arg gates)"/>
+      <param name="step_time" value="$(arg step_time)"/>
+      <param name="moves" value="$(arg moves)"/>
+      <param name="obey_planner" value="$(arg obey_planner)"/>
+      <param name="halt_timeout" value="$(arg halt_timeout)"/>
+    </node>
+
+  </group>
+
+</launch>

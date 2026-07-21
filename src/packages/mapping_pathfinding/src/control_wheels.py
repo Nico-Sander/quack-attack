@@ -7,7 +7,7 @@ ROS node for controlling physical wheel commands based on DriveMode.
 import os
 import json
 import rospy
-from std_msgs.msg import Float64, Int32, String
+from std_msgs.msg import Float64, Int32
 from duckietown_msgs.msg import Twist2DStamped, FSMState
 from custom_enums import DriveMode, IntersectionPhase, TurnDirection
 
@@ -27,15 +27,13 @@ class ControlWheelsNode:
         self.intersection_phase_start_time = 0.0
 
         self.last_error = 0.0
-        self.integral = 0.0           
+        self.integral = 0.0
         self.last_time = None
+        # Filtered derivative. See the low-pass in _cb_lane.
+        self.d_filtered = 0.0
         
         self.v = 0.0
         self.omega = 0.0
-
-        self.red_detected = False
-        self.red_distance_y = 0.0
-        self.red_angle = 0.0
 
         # Topics
         base = f"/{self._vehicle_name}"
@@ -46,10 +44,12 @@ class ControlWheelsNode:
         fsm_msg = FSMState()
         fsm_msg.state = "LANE_FOLLOWING"
         self.pub_fsm.publish(fsm_msg)
-        rospy.loginfo("Forced Duckiebot FSM to LANE_FOLLOWING mode.")
+        rospy.loginfo("control_wheels ready: %d Hz, max %.2f m/s, "
+                      "Duckiebot FSM forced to LANE_FOLLOWING",
+                      self.config.get("publish_rate", 30),
+                      self.config["pid"]["max_vel"])
         
         self.sub_lane = rospy.Subscriber(f"{base}/detect/lane", Float64, self._cb_lane, queue_size=1)
-        self.sub_borders = rospy.Subscriber(f"{base}/detect/lane_borders", String, self._cb_borders, queue_size=1)
 
         self.sub_mode = rospy.Subscriber(f"{base}/switch/mode", Int32, self._cb_mode, queue_size=1)
         self.sub_turn = rospy.Subscriber(f"{base}/switch/turn_direction", Int32, self._cb_direction, queue_size=1)
@@ -65,16 +65,6 @@ class ControlWheelsNode:
         except (FileNotFoundError, KeyError) as e:
             rospy.logerr(f"Missing config.json parameters: {e}")
             rospy.signal_shutdown("Missing required config.")
-
-    def _cb_borders(self, msg):
-        """Extracts geometric features from the semantic masks"""
-        try:
-            data = json.loads(msg.data)
-            self.red_detected = data.get("red_detected", False)
-            self.red_distance_y = data.get("red_distance_y", 0.0)
-            self.red_angle = data.get("red_angle", 0.0)
-        except json.JSONDecodeError:
-            pass
 
     def _cb_direction(self, msg):
         try:
@@ -129,30 +119,31 @@ class ControlWheelsNode:
             self.integral += error * dt
             self.integral = max(min(self.integral, 1.0), -1.0)
             i_term = self.config["pid"]["i"] * self.integral
-            d_term = kd * ((error - self.last_error) / dt)
 
-            omega_lane = max(min(p_term + i_term + d_term, 5.0), -5.0)
+            # Low-pass filtered derivative. The error is a segmentation median,
+            # so it is quantised and noisy; differentiating it amplifies that
+            # noise, and the faster the loop runs the smaller and noisier each
+            # step becomes. The filter keeps the D term usable regardless of the
+            # control rate, which is what lets frame_skip be changed without the
+            # steering blowing up. tau is a time constant in seconds: larger =
+            # smoother but laggier. The alpha is derived from the real dt so the
+            # filter behaves the same whether the loop runs at 10 or 30 Hz.
+            raw_derivative = (error - self.last_error) / dt
+            tau = self.config["pid"].get("d_filter_tau", 0.08)
+            alpha = dt / (tau + dt) if (tau + dt) > 0.0 else 1.0
+            self.d_filtered += alpha * (raw_derivative - self.d_filtered)
+            d_term = kd * self.d_filtered
 
-            # Dynamic Red-Line Squaring
-            if self.active_mode == DriveMode.APPROACHING_STOP_LINE and self.red_detected:
-                # Calculate blending weight (0.0 when far, 1.0 when at the line)
-                start_blend_y = 0.40 # Start caring about angle when line is 40% down image
-                stop_y = 0.92        # Match this roughly to your intersection threshold
-                
-                progress = (self.red_distance_y - start_blend_y) / (stop_y - start_blend_y)
-                blend_weight = max(0.0, min(1.0, progress))
-
-                # Calculate Angle Error
-                # If line slopes down-right (+ angle), robot is facing too far left. Turn Right (- omega).
-                kp_angle = self.config["pid"].get("p_angle", 2.5)
-                omega_angle = -1.0 * kp_angle * self.red_angle
-
-                # Blend the two steering commands
-                omega_final = (omega_lane * (1.0 - blend_weight)) + (omega_angle * blend_weight)
-            else:
-                omega_final = omega_lane
-
-            self.omega = max(min(omega_final, 5.0), -5.0)
+            # Steering is lane centering, in every mode. There used to be a
+            # "red-line squaring" blend here that steered towards being
+            # perpendicular to the stop line as it got close. It was dropped:
+            # squaring up only pays off if the bot also arrives at a repeatable
+            # distance from the line, which it does not, and the crossing no
+            # longer depends on a perfect starting pose now that it ends on
+            # seeing a lane again rather than on a timer. Fighting the lane
+            # controller near the line made stops less consistent, not more.
+            omega_lane = p_term + i_term + d_term
+            self.omega = max(min(omega_lane, 5.0), -5.0)
 
             # Linear Velocity Calculation
             self.v = max(max_vel * (1.0 - (abs(error) * 0.7)), 0.04)
@@ -164,7 +155,14 @@ class ControlWheelsNode:
         """Open-loop kinematic execution based on current crossing phase."""
         current_time = rospy.Time.now().to_sec()
         cross_cfg = self.config["intersection"]
-        rospy.loginfo(f"Drive Intersection, Phase: {self.intersection_phase.name}, Direction: {self.turn_direction.name}")
+        # logdebug, not loginfo: switch_control already reports each crossing
+        # and its outcome, so this low-level phase trace is noise on the console
+        # by default. Runs every publish tick, hence also throttled.
+        rospy.logdebug_throttle(
+            0.5,
+            f"Crossing phase={self.intersection_phase.name}, "
+            f"direction={self.turn_direction.name}"
+        )
 
         if self.intersection_phase == IntersectionPhase.STRAIGHT_BEFORE_TURN:
             twist.v = cross_cfg["straight_before_turn"]["v"]
@@ -189,8 +187,17 @@ class ControlWheelsNode:
         self.pub_cmd_vel.publish(Twist2DStamped(v=0.0, omega=0.0))
 
     def run(self):
-        """Publishing loop running at 10 Hz."""
-        rate = rospy.Rate(10)
+        """
+        Publishing loop.
+
+        Runs faster than the lane detector on purpose. The PID itself is still
+        computed once per lane message (~10 Hz), so the gains are unaffected --
+        this only decides how promptly the newest command reaches the wheels,
+        and how finely the timed phases of a crossing are resolved. At 10 Hz a
+        crossing phase boundary could land up to 100 ms late, which on a 0.42 s
+        segment is a 24% error.
+        """
+        rate = rospy.Rate(self.config.get("publish_rate", 30))
 
         while not rospy.is_shutdown():
             twist = Twist2DStamped()

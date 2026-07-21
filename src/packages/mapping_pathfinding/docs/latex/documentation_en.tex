@@ -1,0 +1,286 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage[margin=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{hyperref}
+
+% Placeholder box for a figure that still has to be produced by hand.
+% #1 = caption; the body describes what belongs in it.
+\newsavebox{\placebox}
+\newenvironment{placeholder}[1]
+  {\par\medskip\noindent\begin{center}
+   \setlength{\fboxsep}{6pt}%
+   \begin{lrbox}{\placebox}%
+   \begin{minipage}{0.88\linewidth}
+   \centering\textbf{[ PLACEHOLDER: #1 ]}\\[0.8em]
+   \raggedright\footnotesize}
+  {\end{minipage}\end{lrbox}\fbox{\usebox{\placebox}}\end{center}\medskip}
+
+\title{\textbf{mapping\_pathfinding}\\[0.3em]
+       \large Mapping, Localization and Path Planning for the Duckiebot City Challenge}
+\author{Nico Sander}
+\date{\today}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.2ex plus .5ex}{0.8ex}
+\titlespacing*{\subsection}{0pt}{1ex plus .3ex}{0.5ex}
+\setlength{\parskip}{0.4ex}
+
+\begin{document}
+\maketitle
+
+\section{System Overview}
+
+\texttt{mapping\_pathfinding} is a ROS 1 (Noetic) package that lets a Duckiebot
+autonomously explore a small city of streets and intersections, build a map of
+it, and afterwards drive a sequence of announced gates in the fastest order it
+can find.
+
+The mission is split into two phases:
+
+\begin{description}
+  \item[MAPPING (untimed)] The bot drives every street of the city at least
+    once. While driving it records which \emph{gate} (an AprilTag mounted over
+    a street) belongs to which street, and it measures how long each street and
+    each turn actually takes.
+  \item[GATE\_RUN (timed)] The gate order is announced on site as a list of tag
+    IDs. The bot is placed at a known street, plans a route through the gates in
+    that order using the map and the timings from the mapping phase, and drives
+    it.
+  \item[DONE] After the last gate the bot stops and reports the elapsed time.
+\end{description}
+
+The city is modelled as a graph: nodes are intersections, edges are streets.
+Every intersection has up to four numbered \emph{ports} (1--4) arranged
+cyclically, so that for a bot entering through port $p$, port $p+1$ is on its
+right and $p-1$ on its left. Because U-turns are forbidden, planning does not
+happen over nodes but over directed states \texttt{(node, entry\_port)} --
+``approaching this intersection, having entered through this port''. This state
+also identifies the street that was just driven, which is what allows the
+planner to target individual streets and gates. The map itself lives in a single
+JSON file (\texttt{config/city.json}) that every node reads, so there is only
+ever one definition of the city.
+
+The package is deliberately split into thin ROS nodes and a ROS-free core. All
+graph, planning, timing and filtering logic is implemented in plain Python
+modules without any ROS import, which means the whole decision-making core is
+covered by offline unit tests (currently 209) that run without a robot.
+
+\begin{placeholder}{ROS node graph}
+  A block diagram of the running ROS graph. Draw one box per node
+  (\texttt{detect\_lane}, \texttt{detect\_signs}, \texttt{detect\_intersection},
+  \texttt{switch\_control}, \texttt{control\_wheels},
+  \texttt{mapping\_pathplanning}, \texttt{visualization}, \texttt{dashboard})
+  plus the camera and the wheel driver as external boxes, and connect them with
+  arrows labelled by the topic name. The important edges are:
+  camera $\rightarrow$ \texttt{detect\_lane} and \texttt{detect\_signs};
+  \texttt{/detect/lane\_borders} $\rightarrow$ \texttt{detect\_intersection};
+  \texttt{/detect/intersection} and \texttt{/detect/sign} $\rightarrow$
+  \texttt{switch\_control}; \texttt{/switch/mode} and
+  \texttt{/switch/turn\_direction} $\rightarrow$ \texttt{control\_wheels}
+  \emph{and} $\rightarrow$ \texttt{mapping\_pathplanning};
+  \texttt{/detect/sign\_detections} $\rightarrow$
+  \texttt{mapping\_pathplanning}; and the edge that closes the loop,
+  \texttt{/plan/turn\_command} $\rightarrow$ \texttt{switch\_control}.
+  Also show \texttt{/mapping/state} $\rightarrow$ \texttt{visualization}.
+  Worth marking visually: the three layers -- perception (left), behaviour
+  (middle), mission/planning (right) -- and the fact that the mission layer
+  feeds back into the behaviour layer. A screenshot of \texttt{rqt\_graph} is an
+  acceptable substitute, but a hand-drawn version is far more readable because
+  it can leave out the debug topics.
+\end{placeholder}
+
+\section{Key Components}
+
+\subsection{Perception}
+
+\paragraph{\texttt{detect\_lane.py}} Segments the camera image with a PyTorch
+U-Net into white lane markings, the yellow centre line and red stop lines. From
+the segmentation it computes a cross-track error -- how far the bot is off the
+centre of its lane -- and publishes it on \texttt{/detect/lane}. It also
+publishes the geometric lane borders (including the position of a red line in
+the image) on \texttt{/detect/lane\_borders}, plus debug images for the
+dashboard. The whole perception pipeline runs at 30\,Hz on the laptop, around
+20\,ms per frame against a 33\,ms budget.
+
+\paragraph{\texttt{detect\_signs.py}} Detects AprilTags with
+\texttt{pupil\_apriltags} and publishes on two topics, because the two consumers
+need different things. \texttt{/detect/sign} carries only the ID of the closest
+tag and is unthresholded -- \texttt{switch\_control} needs to see intersection
+signs at any size. \texttt{/detect/sign\_detections} carries \emph{every}
+detection with its corners, its area in pixels and an accept/reject decision;
+the mission node needs the area to tell whether a gate is on the current street
+or somewhere beyond the intersection.
+
+\paragraph{\texttt{detect\_intersection.py}} A small logic node that turns the
+lane geometry into an intersection state: no intersection, intersection
+approaching, or stop line reached. It does this purely from the vertical
+position of the detected red line, without touching the image again.
+
+\subsection{Behaviour and Actuation}
+
+\paragraph{\texttt{switch\_control.py}} The behaviour state machine. It decides
+\emph{what the bot is currently doing} -- lane following, approaching an
+intersection, stopped at the red line, or crossing -- and publishes that as
+\texttt{/switch/mode} together with the turn direction on
+\texttt{/switch/turn\_direction}. The turn direction normally comes from the
+mission node over \texttt{/plan/turn\_command}; if that command is stale or
+missing, the node falls back to its older behaviour of picking a direction from
+the intersection sign, so a dead mission node degrades gracefully instead of
+stopping the robot. Crossings are closed-loop: the manoeuvre ends when lane
+markings are visible again, not when a timer expires -- the configured duration
+is only a timeout. This is what makes the stack tolerant of the bot not being
+perfectly square at the stop line.
+
+\paragraph{\texttt{control\_wheels.py}} The only node that talks to the motors.
+It translates the current drive mode into wheel commands: in lane following it
+runs a PID controller on the cross-track error (with a low-pass filtered
+derivative term so it stays stable at 30\,Hz), and during a crossing it plays
+back a fixed arc for the commanded direction until \texttt{switch\_control} ends
+the manoeuvre. Measured latency from photon to command is roughly 75\,ms.
+
+\subsection{Mission, Mapping and Planning}
+
+\paragraph{\texttt{mapping\_pathplanning.py}} The node that owns the mission and
+the largest single component of the package. It does four things. \emph{(1)
+Localization:} graph dead-reckoning -- the believed position advances by one
+street every time \texttt{switch\_control} reports a completed crossing.
+\emph{(2) Mapping:} it writes gates onto the streets they were seen on. \emph{(3)
+Planning:} after every crossing it replans the whole remaining route, which is
+cheap on a city this size and means a corrected position immediately produces a
+corrected route. \emph{(4) Commanding:} it publishes the next turn on
+\texttt{/plan/turn\_command}, which closes the control loop. It also publishes
+the full mission state (map, gates, path, position, phase) as JSON on
+\texttt{/mapping/state} and offers a \texttt{start\_gate\_run} service for the
+phase switch.
+
+\paragraph{\texttt{planner.py} (ROS-free)} Dijkstra over the directed states
+\texttt{(node, entry\_port)}. U-turns are not forbidden by a check but are
+structurally impossible to express, because no direction table maps a port onto
+itself. Edges are weighted with an estimated duration -- a move costs
+\texttt{stop + turn + street} -- so the search prefers genuinely faster routes,
+not just shorter ones; a right turn is markedly cheaper than a left one. For the
+mapping phase the same module drives a greedy nearest-unvisited-street
+exploration.
+
+\paragraph{\texttt{city\_map.py} (ROS-free)} The graph itself: port geometry,
+loading and validating \texttt{city.json}, and \texttt{GraphMap}, the live map
+state that tracks which streets have been driven and which gate sits on which
+street. Edge keys are direction-independent (\texttt{A1\_\_B1} from either end),
+so ``a gate spans the whole street'' falls out for free.
+
+\paragraph{\texttt{gate\_detection.py} (ROS-free)} Decides which gate sightings
+may be believed. A gate is written onto a street permanently -- the first write
+wins -- because the camera sees past the intersection and later sightings are
+taken from further away and at a worse angle. Three filters guard that
+irreversible write: mapping is disabled while stopped and while crossing; the
+tag's area must exceed a threshold calibrated from recorded runs
+(\texttt{gate\_min\_area}, currently 900\,px$^2$); and the same tag must be seen
+on the same street for several consecutive frames.
+
+\paragraph{\texttt{run\_timing.py} (ROS-free)} Measures how long each street and
+each turn actually takes, using the drive-mode transitions published by
+\texttt{switch\_control} as the single time base, so the measured pieces tile a
+move with no gap or overlap. The mapping phase is untimed, so measuring there is
+free; the timed gate run is then planned against real numbers instead of a flat
+guess. Repeated measurements of a street are reduced with the median.
+
+\paragraph{\texttt{crossing.py} and \texttt{graph\_layout.py} (ROS-free)} Two
+small support modules: the first decides when an intersection crossing is over
+(lane markings visible again, after a minimum blind time), the second computes
+the drawing geometry for the map, with the tested property that drawn streets
+must never cross each other outside a node.
+
+\subsection{Operation and Visualization}
+
+\paragraph{\texttt{visualization.py}} A live window showing the three things the
+challenge asks to be made visible: the map that was built (streets with the
+gates found on them), the planned path (dashed overlay with step numbers), and
+where the bot believes it is (current street highlighted, ring on the next
+intersection).
+
+\paragraph{\texttt{dashboard.py}} A perception debug window that tiles the raw
+camera image, the segmentation masks and the AprilTag bounding boxes with their
+measured areas into a single view.
+
+\paragraph{\texttt{mission\_tui.py} / \texttt{mission\_setup.py}} A menu-driven
+front end for the whole session. Its structural point is that \emph{one}
+\texttt{roslaunch} stays alive across both phases -- the map, the gates and the
+measured times live in the mission node, and restarting it between phases would
+throw them away. The TUI therefore owns the launch process and switches phases
+through parameters and the service call. \texttt{mission\_setup.py} validates
+the typed answers (above all the start placement, which is checked against the
+city graph before anything is launched) and builds the launch command.
+
+\section{State Diagrams and Flowcharts}
+
+\begin{placeholder}{Mission phase state diagram}
+  The top-level mission state machine of \texttt{mapping\_pathplanning.py}, with
+  three states: \textbf{MAPPING}, \textbf{GATE\_RUN} and \textbf{DONE}.
+  Transitions to draw: MAPPING $\rightarrow$ GATE\_RUN, labelled ``all streets
+  driven \emph{and} all gates seen $\rightarrow$ halt at the red line, wait for
+  the \texttt{start\_gate\_run} service''; GATE\_RUN $\rightarrow$ DONE,
+  labelled ``last gate in the announced order passed''. Mark clearly that
+  between MAPPING and GATE\_RUN there is a \emph{hard stop} during which the bot
+  is physically repositioned, and that the transition out of MAPPING requires
+  gates to be \emph{seen}, not just streets to be entered.
+\end{placeholder}
+
+\begin{placeholder}{Behaviour state machine (\texttt{switch\_control})}
+  The drive-mode FSM: \textbf{LANE\_FOLLOWING} $\rightarrow$
+  \textbf{APPROACHING} $\rightarrow$ \textbf{STOPPED} $\rightarrow$
+  \textbf{CROSSING} $\rightarrow$ back to LANE\_FOLLOWING. Label each transition
+  with its trigger: red line detected above the threshold; stop line reached;
+  stop duration elapsed \emph{and} a turn command available; and -- the
+  important one -- crossing ends when \emph{lane markings are visible again},
+  with the configured turn duration acting only as a timeout. Add the
+  \texttt{HALT} command as a transition into a holding state, and
+  \texttt{/plan/resume\_driving} as the edge that puts a repositioned bot back
+  into LANE\_FOLLOWING without performing a crossing. It is worth annotating the
+  same diagram with which time interval \texttt{run\_timing.py} measures as
+  ``turn time'' and which as ``street time''.
+\end{placeholder}
+
+\begin{placeholder}{Gate sighting decision flowchart}
+  A flowchart for a single incoming detection from
+  \texttt{/detect/sign\_detections}, ending in either ``write gate onto street''
+  or ``discard''. Decision boxes in order: is the bot driving (not stopped, not
+  crossing)? is the tag ID a gate at all? is its area $\geq$
+  \texttt{gate\_min\_area}? has the same (street, gate) pair been seen for
+  \texttt{gate\_confirm\_frames} consecutive detections? does this street
+  already carry a gate (if yes: discard -- the first write is permanent)? This
+  diagram is the best place to show \emph{why} each filter exists; a one-line
+  annotation per box is enough.
+\end{placeholder}
+
+\begin{placeholder}{Control loop / per-intersection sequence}
+  A sequence diagram over one intersection, with the lanes
+  camera $\rightarrow$ \texttt{detect\_*} $\rightarrow$ \texttt{switch\_control}
+  $\rightarrow$ \texttt{control\_wheels}, and \texttt{mapping\_pathplanning} as
+  a parallel lane. Show the order: red line detected, stop, mission node
+  replans and publishes the turn command, \texttt{switch\_control} enters
+  CROSSING with that direction, \texttt{control\_wheels} drives the arc, lane
+  markings reappear, \texttt{switch\_control} reports the completed crossing,
+  and the mission node advances its believed position by one street and replans.
+  This is the diagram that makes the closed loop -- and the 30\,Hz inner loop
+  inside the outer per-intersection loop -- legible.
+\end{placeholder}
+
+\section{Configuration and Testing}
+
+All tuned constants live in \texttt{config/config.json} (timings, PID gains,
+thresholds, the planner's cost model); the map is \texttt{config/city.json} and
+the cosmetic gate ID $\rightarrow$ colour mapping is \texttt{config/gates.json}.
+Launch arguments override selected values for a single run.
+
+Because the decision-making core is ROS-free, it is verified offline: port
+geometry and the no-U-turn invariant, city validation, gate-sighting filters,
+planner reachability from every start state, all gate orderings from all start
+states, greedy coverage, full mission simulations and synthetic grid cities.
+In addition, \texttt{launch/simulate.launch} runs the real mission node against
+a fake driver, exercising the actual ROS layer -- topics, timers, the phase
+switch -- without a camera, motors or a robot.
+
+\end{document}

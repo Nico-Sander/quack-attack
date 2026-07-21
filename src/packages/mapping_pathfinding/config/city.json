@@ -1,0 +1,42 @@
+{
+  "name": "challenge-4-example-city",
+  "description": [
+    "The city the physical test track represents (docs/challenge-4-graph.png).",
+    "Transcribed from the 'Beispiel' dictionary in docs/01-information.md.",
+    "",
+    "Nodes are intersections, edges are streets. A is the 4-way intersection,",
+    "B and C are T-junctions. An edge may carry at most one gate; because a gate",
+    "tag spans the whole street, it is direction-independent.",
+    "",
+    "Port convention (docs/02-additional-information.md): ports 1-4 are arranged",
+    "cyclically around an intersection, so 1 and 3 are opposite each other and 2",
+    "is always to the right of 1. A port that is absent has no street attached.",
+    "",
+    "'nodes' maps node -> port -> [neighbour_node, neighbour_port] and must be",
+    "symmetric: if A port 1 leads to B port 1, then B port 1 leads back to A",
+    "port 1. load_city() validates this on startup."
+  ],
+  "nodes": {
+    "A": {
+      "1": ["B", 1],
+      "2": ["C", 2],
+      "3": ["C", 1],
+      "4": ["B", 2]
+    },
+    "B": {
+      "1": ["A", 1],
+      "2": ["A", 4],
+      "3": ["C", 4]
+    },
+    "C": {
+      "1": ["A", 3],
+      "2": ["A", 2],
+      "4": ["B", 3]
+    }
+  },
+  "layout": {
+    "A": [4.0, 0.0],
+    "B": [4.0, -4.0],
+    "C": [0.0, 0.0]
+  }
+}

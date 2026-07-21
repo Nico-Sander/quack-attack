@@ -34,7 +34,8 @@ class DetectIntersectionNode:
             intersection_topic, Int32, queue_size=1
         )
 
-        rospy.loginfo(f"[{node_name}] Initialized. Listening to semantic geometry.")
+        rospy.loginfo("detect_intersection ready: stop line at y >= %.2f",
+                      self.config["stop_y_threshold"])
 
     def _load_config(self):
         """Loads parameters from the central config.json file."""

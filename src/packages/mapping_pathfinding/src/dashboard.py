@@ -5,11 +5,17 @@ ROS 1 node for aggregating multiple debug images into a single OpenCV dashboard.
 Now includes an alpha-blended overlay of semantic masks on the raw camera feed.
 """
 
+import json
 import os
 import cv2
 import numpy as np
 import rospy
 from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import String
+
+# Boxes older than this are dropped rather than drawn at a stale position. The
+# sign detector runs at 10 Hz, so anything this old means it has stopped.
+DETECTION_MAX_AGE = 0.5
 
 class DashboardNode:
     """Subscribes to debug image feeds and concatenates them into a single UI."""
@@ -52,6 +58,13 @@ class DashboardNode:
         # Raw Camera Feed
         rospy.Subscriber(f"{base_topic}/camera_node/image/compressed", CompressedImage, self.cb_camera, queue_size=1)
 
+        # AprilTag detections, drawn as boxes over the camera feed.
+        self.detections = []
+        self.detections_min_area = 0.0
+        self.detections_stamp = 0.0
+        rospy.Subscriber(f"{base_topic}/detect/sign_detections", String,
+                         self.cb_detections, queue_size=1)
+
     def decode_image(self, msg):
         """Convert a compressed ROS image message to an OpenCV BGR array."""
         np_arr = np.frombuffer(msg.data, np.uint8)
@@ -68,6 +81,63 @@ class DashboardNode:
     def cb_yellow(self, msg): self.img_yellow = self.decode_image(msg)
     def cb_red(self, msg): self.img_red = self.decode_image(msg)
     def cb_camera(self, msg): self.img_camera = self.decode_image(msg)
+
+    def cb_detections(self, msg):
+        """Stores the latest AprilTag detections for overlay drawing."""
+        try:
+            payload = json.loads(msg.data)
+        except (ValueError, TypeError):
+            return
+
+        self.detections = payload.get("detections", [])
+        self.detections_min_area = float(payload.get("min_area", 0.0))
+        self.detections_stamp = rospy.Time.now().to_sec()
+
+    def _draw_detections(self, img):
+        """
+        Outlines every detected tag on the raw camera image.
+
+        Green = accepted: big enough to be on the street the bot is driving, so
+        the mapping node will consider it. Red = below the area threshold and
+        ignored, which is what a gate seen across an intersection looks like.
+        Use this to calibrate detect_signs' gate_min_area: the gate ahead should
+        be green, anything on another street red.
+
+        The boxes come from a different frame than the one being displayed, so
+        they lag it slightly. That is fine for reading areas off the screen.
+        """
+        if img is None or img.size == 0:
+            return img
+
+        age = rospy.Time.now().to_sec() - self.detections_stamp
+
+        if not self.detections or age > DETECTION_MAX_AGE:
+            return img
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        for det in self.detections:
+            corners = det.get("corners")
+
+            if not corners:
+                continue
+
+            accepted = bool(det.get("accepted"))
+            colour = (0, 255, 0) if accepted else (0, 0, 255)
+            points = np.array(corners, dtype=np.int32).reshape((-1, 1, 2))
+
+            cv2.polylines(img, [points], True, colour, 2)
+
+            # Label above the box, clamped so it stays on screen.
+            x, y = points[:, 0, 0].min(), points[:, 0, 1].min()
+            cv2.putText(
+                img,
+                "ID %d  %.0fpx" % (int(det.get("tag_id", -1)),
+                                   float(det.get("area", 0.0))),
+                (int(x), max(int(y) - 8, 14)), font, 0.5, colour, 2
+            )
+
+        return img
 
     def _apply_semantic_overlay(self, camera_img, mask_white, mask_yellow, mask_red):
         """Overlays the AI segmentation masks translucently over the raw camera feed."""
@@ -159,6 +229,9 @@ class DashboardNode:
             camera_with_overlay = self._apply_semantic_overlay(
                 self.img_camera, self.img_white, self.img_yellow, self.img_red
             )
+            # Tag boxes go on last so they sit on top of the masks. Drawn before
+            # scaling because the corners are in camera pixel coordinates.
+            camera_with_overlay = self._draw_detections(camera_with_overlay)
             safe_main = self._get_scaled_bottom_image(camera_with_overlay)
 
             # Apply labels
@@ -167,6 +240,10 @@ class DashboardNode:
             cv2.putText(safe_yellow, "Yellow Mask", (10, 30), font, 0.7, (0, 255, 255), 2)
             cv2.putText(safe_red, "Red Mask", (10, 30), font, 0.7, (0, 0, 255), 2)
             cv2.putText(safe_main, "Raw Feed + Semantic Overlay", (10, 30), font, 0.7, (0, 255, 0), 2)
+            cv2.putText(safe_main,
+                        "Tags: green = accepted (>= %.0f px), red = too far"
+                        % self.detections_min_area,
+                        (10, 55), font, 0.5, (200, 200, 200), 1)
 
             # Assemble dashboard
             top_row = cv2.hconcat([

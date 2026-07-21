@@ -1,41 +1,42 @@
 #!/usr/bin/env python3
 
-import os
+"""
+Live view of the map, the planned path and the believed position.
+
+This covers the three things the challenge asks to be made visible:
+  (a) the map that was built      -- streets, with the gates found on them
+  (b) the chosen path             -- blue dashed overlay with step numbers
+  (c) where the bot thinks it is  -- red current street, ring on the next node
+
+The city itself is read from the same config file the mapping node uses, so
+there is only ever one definition of the map. Everything else comes in over
+/mapping/state.
+"""
+
 import json
+import os
+
 import cv2
-import rospy
 import numpy as np
 import networkx as nx
+import rospy
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyArrowPatch
 
 from std_msgs.msg import String
 
+import city_map
+import gate_detection
+import graph_layout
 
-# Same graph as in the mapping node:
-# A1 -> B1
-# A2 -> B4
-# A3 -> B3
-# A4 no connection
-# B1 -> A1
-# B2 no connection
-# B3 -> A3
-# B4 -> A2
-CITY = {
-    "A": {
-        1: ("B", 1),
-        2: ("B", 4),
-        3: ("B", 3),
-    },
-    "B": {
-        1: ("A", 1),
-        3: ("A", 3),
-        4: ("A", 2),
-    },
-}
+
+CURRENT_COLOUR = "#E8483C"
+VISITED_COLOUR = "#2A9D8F"
+UNVISITED_COLOUR = "#BBBBBB"
+ROUTE_COLOUR = "#3D5AFE"
+NEXT_NODE_COLOUR = "#FFD400"
 
 
 class MappingVisualizationNode:
@@ -44,516 +45,463 @@ class MappingVisualizationNode:
 
         self.vehicle_name = os.environ.get("VEHICLE_NAME", "default_robot")
 
+        city_path = rospy.get_param("~city_path", city_map.DEFAULT_CITY_PATH)
+        gates_path = rospy.get_param("~gates_path", city_map.DEFAULT_GATES_PATH)
+
+        self.city, self.layout = city_map.load_city(city_path)
+        self.gate_config = city_map.load_gate_config(gates_path)
+
+        with open(gates_path, "r") as handle:
+            self.unknown_gate_hex = json.load(handle).get(
+                "unknown_gate_hex", "#999999"
+            )
+
+        # Headless mode renders without opening a window, for machines with no
+        # display. Combined with snapshot_path it is how the layout gets checked
+        # without a screen, and how a finished map is captured for a report.
+        self.headless = bool(rospy.get_param("~headless", False))
+        self.snapshot_path = str(rospy.get_param("~snapshot_path", ""))
+
         self.latest_state = None
         self.dirty = False
+        # edge_key -> measured seconds, filled in from /mapping/state.
+        self.street_times = {}
 
-        self.G = self._build_graph(CITY)
+        self.G = self._build_graph()
         self.edge_rad = self._compute_edge_rads()
-
         self.pos = self._compute_node_positions()
 
         base = f"/{self.vehicle_name}"
 
         self.sub_state = rospy.Subscriber(
-            f"{base}/mapping/state",
-            String,
-            self._cb_state,
-            queue_size=1
+            f"{base}/mapping/state", String, self._cb_state, queue_size=1
         )
 
         self.window_name = "Duckiebot Mapping Graph"
-        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.window_name, 1000, 650)
 
-        rospy.loginfo("mapping_visualization_node started")
-        rospy.loginfo("Subscribing to %s/mapping/state", base)
+        if not self.headless:
+            cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(self.window_name, 1100, 700)
 
-    # ---------------------------------------------------------------------
-    # Graph construction from CITY
-    # ---------------------------------------------------------------------
-    def _build_graph(self, city):
-        G = nx.MultiGraph()
-        added_edges = set()
+        rospy.loginfo("mapping_visualization_node started, listening on %s/mapping/state",
+                      base)
 
-        for node, ports in city.items():
-            G.add_node(node)
+        # A street drawn across another one reads as an intersection that does
+        # not exist. This should never fire (tests/test_layout.py guards it),
+        # but a bad city layout would surface here rather than silently.
+        crossings = graph_layout.find_crossings(
+            self._edge_list(), self.pos, self.edge_rad
+        )
+        if crossings:
+            rospy.logwarn("Layout: streets drawn crossing each other: %s",
+                          crossings)
 
-            for port, target in ports.items():
-                next_node, next_port = target
-                edge_key = self._edge_key(node, port, next_node, next_port)
+    # ------------------------------------------------------------------
+    # Graph construction
+    # ------------------------------------------------------------------
 
-                if edge_key in added_edges:
+    def _build_graph(self):
+        """
+        Builds the drawing graph from the shared city definition.
+
+        Only structure lives here; visited/gate state is applied from
+        /mapping/state so this node never has to second-guess the mapping node.
+        """
+        graph = nx.MultiGraph()
+
+        for node, ports in self.city.items():
+            graph.add_node(node)
+
+            for port, (neighbour, neighbour_port) in ports.items():
+                key = city_map.edge_key(node, port, neighbour, neighbour_port)
+
+                if graph.has_edge(node, neighbour, key=key):
                     continue
 
-                added_edges.add(edge_key)
-
-                G.add_edge(
-                    node,
-                    next_node,
-                    key=edge_key,
-                    ports={
-                        node: port,
-                        next_node: next_port,
-                    },
-                    gate_id=None,
-                    gate_color=None,
-                    visited=False,
+                graph.add_edge(
+                    node, neighbour, key=key,
+                    ports={node: port, neighbour: neighbour_port},
+                    gate_id=None, gate_colour=None, visited=False,
                 )
 
-        return G
-
-    def _edge_key(self, node_a, port_a, node_b, port_b):
-        side_1 = f"{node_a}{port_a}"
-        side_2 = f"{node_b}{port_b}"
-        return "__".join(sorted([side_1, side_2]))
+        return graph
 
     def _compute_node_positions(self):
-        """
-        For small graphs like A/B, a fixed layout is easier to read.
-        For larger graphs, spring_layout is used automatically.
-        """
-        nodes = list(self.G.nodes())
+        """Uses the layout hint from city.json when present, else a spring layout."""
+        if all(node in self.layout for node in self.G.nodes()):
+            return {node: tuple(self.layout[node]) for node in self.G.nodes()}
 
-        if set(nodes) == {"A", "B"}:
-            return {
-                "A": (0.0, 0.0),
-                "B": (4.0, 0.0),
-            }
-
+        rospy.logwarn("City file has no complete layout; falling back to spring layout")
         return nx.spring_layout(self.G, seed=42)
 
     def _compute_edge_rads(self):
         """
-        Automatically computes different curvatures for parallel MultiGraph edges,
-        using only the graph structure.
+        Fans out parallel streets so both connections between two nodes stay
+        visible (A and B are joined twice on the test track).
 
-        Example with three parallel edges:
-            -0.85, 0.0, +0.85
+        The bow is deliberately small: a drawn street that swings wide can
+        cross another one, and a crossing reads as an intersection that does
+        not exist. See graph_layout.DEFAULT_SPREAD.
         """
-        edge_groups = {}
+        groups = {}
 
         for u, v, key, data in self.G.edges(keys=True, data=True):
-            pair = tuple(sorted([u, v]))
-            edge_groups.setdefault(pair, []).append((u, v, key, data))
+            groups.setdefault(tuple(sorted([u, v])), []).append(
+                (key, min(data["ports"].values()))
+            )
 
-        edge_rad = {}
+        return graph_layout.compute_edge_rads(groups)
 
-        for pair, edges in edge_groups.items():
-            def sort_by_ports(edge):
-                _, _, _, data = edge
-                ports = data.get("ports", {})
-                if not ports:
-                    return 0
-                return min(ports.values())
+    def _edge_list(self):
+        """(edge_key, u, v) for every street, for the layout helpers."""
+        return [(key, u, v) for u, v, key in self.G.edges(keys=True)]
 
-            edges = sorted(edges, key=sort_by_ports)
-            count = len(edges)
+    # ------------------------------------------------------------------
+    # State handling
+    # ------------------------------------------------------------------
 
-            if count == 1:
-                edge_rad[edges[0][2]] = 0.0
-                continue
-
-            spread = 1.7
-
-            for idx, (_, _, key, _) in enumerate(edges):
-                rad = -spread / 2.0 + idx * (spread / (count - 1))
-                edge_rad[key] = rad
-
-        return edge_rad
-
-    # ---------------------------------------------------------------------
-    # State update from /mapping/state
-    # ---------------------------------------------------------------------
     def _cb_state(self, msg):
         try:
             self.latest_state = json.loads(msg.data)
-            self._update_graph_from_state(self.latest_state)
-            self.dirty = True
-        except json.JSONDecodeError:
+        except ValueError:
             rospy.logwarn("Could not decode mapping/state JSON")
+            return
 
-    def _update_graph_from_state(self, state):
-        """
-        Applies visited and gate information from the mapping state.
-        """
-        move_result = state.get("move_result")
-
-        if move_result and move_result.get("success"):
-            new_edge = move_result.get("new_edge")
-
-            if new_edge and len(new_edge) == 4:
-                fn, fp, tn, tp = new_edge
-                edge_key = self._edge_key(fn, fp, tn, tp)
-
-                if self.G.has_edge(fn, tn, key=edge_key):
-                    self.G[fn][tn][edge_key]["visited"] = True
-
-        for gate in state.get("gates", []):
-            edge_key = gate.get("edge_key")
-            gate_id = gate.get("gate_id")
-            gate_color = gate.get("gate_color")
-
-            for u, v, key in self.G.edges(keys=True):
-                if key == edge_key:
-                    self.G[u][v][key]["gate_id"] = gate_id
-                    self.G[u][v][key]["gate_color"] = gate_color
-
-    # ---------------------------------------------------------------------
-    # Drawing helpers
-    # ---------------------------------------------------------------------
-    def _draw_curved_edge(self, ax, u, v, rad, color, width):
-        x1, y1 = self.pos[u]
-        x2, y2 = self.pos[v]
-
-        patch = FancyArrowPatch(
-            (x1, y1),
-            (x2, y2),
-            connectionstyle=f"arc3,rad={rad}",
-            arrowstyle="-",
-            linewidth=width,
-            color=color,
-            shrinkA=45,
-            shrinkB=45,
-            zorder=1,
+        self._apply_edge_state(self.latest_state.get("edges", {}))
+        self.street_times = self.latest_state.get("timing", {}).get(
+            "street_times", {}
         )
+        self.dirty = True
 
-        ax.add_patch(patch)
+    def _apply_edge_state(self, edges):
+        """Copies the mapping node's edge table onto the drawing graph."""
+        for u, v, key, data in self.G.edges(keys=True, data=True):
+            reported = edges.get(key)
+
+            if reported is None:
+                continue
+
+            data["visited"] = reported.get("visited", False)
+            data["gate_id"] = reported.get("gate_id")
+            data["gate_colour"] = reported.get("gate_colour")
+
+    def _gate_hex(self, gate_id):
+        entry = self.gate_config.get(gate_id)
+        return entry["hex"] if entry else self.unknown_gate_hex
+
+    # ------------------------------------------------------------------
+    # Drawing helpers
+    # ------------------------------------------------------------------
+
+    def _draw_curved_edge(self, ax, u, v, rad, colour, width, linestyle="-",
+                          zorder=1):
+        """
+        Draws a street as an explicit Bezier sampled in data coordinates.
+
+        Deliberately not FancyArrowPatch/arc3: that builds its curve in display
+        coordinates, so the axis aspect ratio warps the bow. The drawn line then
+        no longer matches the geometry the layout tests check, labels drift off
+        their own street, and streets can cross where the maths says they do
+        not. Sampling graph_layout.curve_points here means what is drawn is
+        exactly what is tested.
+        """
+        points = graph_layout.curve_points(self.pos[u], self.pos[v], rad,
+                                           samples=60, trim=True)
+
+        ax.plot(
+            [p[0] for p in points], [p[1] for p in points],
+            color=colour, linewidth=width, linestyle=linestyle,
+            zorder=zorder, solid_capstyle="round",
+        )
 
     def _bezier_point(self, p0, p1, t, rad):
-        """
-        Point on the same curve that FancyArrowPatch uses with arc3,rad.
-        This keeps labels aligned with the correct edge.
-        """
-        p0 = np.array(p0, dtype=float)
-        p1 = np.array(p1, dtype=float)
+        """Point on the drawn street, so labels and markers track their curve."""
+        return graph_layout.bezier_point(p0, p1, t, rad)
 
-        midpoint = (p0 + p1) / 2.0
-        direction = p1 - p0
+    # ------------------------------------------------------------------
+    # Main drawing
+    # ------------------------------------------------------------------
 
-        control = midpoint + rad * np.array([direction[1], -direction[0]])
-
-        return (
-            (1 - t) ** 2 * p0
-            + 2 * (1 - t) * t * control
-            + t ** 2 * p1
-        )
-
-    def _color_for_gate(self, gate_color):
-        """
-        Used if colors are added later.
-        Yellow is used when no color is set.
-        """
-        if gate_color is None:
-            return "#FFD400"
-
-        color_map = {
-            "red": "#E8483C",
-            "green": "#2A9D8F",
-            "blue": "#4C9BE8",
-            "yellow": "#FFD400",
-            "orange": "#F4A261",
-            "purple": "#9B5DE5",
-        }
-
-        return color_map.get(str(gate_color).lower(), "#FFD400")
-
-    # ---------------------------------------------------------------------
-    # Main drawing function
-    # ---------------------------------------------------------------------
     def _draw_to_image(self):
-        """
-        Draws the current graph state and returns an OpenCV BGR image.
-        Parallel MultiGraph edges are separated automatically.
-        """
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.set_title("Duckiebot Mapping Graph", fontsize=16)
+        fig, ax = plt.subplots(figsize=(11, 7))
 
-        # Nodes
-        nx.draw_networkx_nodes(
-            self.G,
-            self.pos,
-            node_size=1800,
-            node_color="#4C9BE8",
-            edgecolors="black",
-            linewidths=2,
-            ax=ax
+        state = self.latest_state or {}
+        graph_state = state.get("graph", {})
+        plan_state = state.get("plan", {})
+        mission = state.get("mission", {})
+
+        current_edge_key = graph_state.get("current_edge_key")
+        approaching_node = graph_state.get("approaching_node")
+
+        route = plan_state.get("route_edge_keys", [])
+        # A street can be driven more than once in one route, so every step
+        # number it carries is collected.
+        route_positions = {}
+        for index, key in enumerate(route, start=1):
+            route_positions.setdefault(key, []).append(index)
+
+        # Gate-run progress, from what the bot has actually *seen*. Not from
+        # `remaining_gates`: that shrinks when a gate's street is entered,
+        # because that is when the next leg has to be planned -- but entering a
+        # street is not evidence of having passed the gate on it, and a map
+        # that says otherwise is claiming something it does not know.
+        gate_order = mission.get("gate_order") or []
+        done_gates, next_gate, _pending = gate_detection.gate_run_progress(
+            gate_order, mission.get("gates_sighted")
         )
 
-        nx.draw_networkx_labels(
-            self.G,
-            self.pos,
-            font_size=18,
-            font_color="white",
-            font_weight="bold",
-            ax=ax
-        )
+        phase = mission.get("phase", "?")
+        ax.set_title(f"Duckiebot Mapping Graph  --  {phase}", fontsize=16)
 
-        # Current state
-        current_edge_key = None
-        current_edge = None
-        approaching_node = None
-        available_directions = []
-
-        if self.latest_state is not None:
-            graph_state = self.latest_state.get("graph", {})
-            current_edge_key = graph_state.get("current_edge_key")
-            current_edge = graph_state.get("current_edge")
-            approaching_node = graph_state.get("approaching_node")
-            available_directions = graph_state.get("available_directions", [])
-
-        # Draw edges
-        edge_groups = {}
+        nx.draw_networkx_nodes(self.G, self.pos, node_size=1800,
+                               node_color="#4C9BE8", edgecolors="black",
+                               linewidths=2, ax=ax)
+        nx.draw_networkx_labels(self.G, self.pos, font_size=18,
+                                font_color="white", font_weight="bold", ax=ax)
 
         for u, v, key, data in self.G.edges(keys=True, data=True):
-            pair = tuple(sorted([u, v]))
-            edge_groups.setdefault(pair, []).append((u, v, key, data))
+            # Canonical endpoint order. The sign of `rad` bows the curve
+            # relative to the u -> v direction, so if the order varied the same
+            # street would bow to the opposite side and could cross a
+            # neighbour. networkx does not promise an order; sorting does.
+            u, v = sorted((u, v))
+            rad = self.edge_rad.get(key, 0.0)
 
-        for pair, edges in edge_groups.items():
-            def sort_by_ports(edge):
-                _, _, _, data = edge
-                ports = data.get("ports", {})
-                if not ports:
-                    return 0
-                return min(ports.values())
+            is_current = key == current_edge_key
+            is_visited = data.get("visited", False)
+            gate_id = data.get("gate_id")
 
-            edges = sorted(edges, key=sort_by_ports)
+            # Coverage decides the colour of the street itself, always. Being
+            # the current street is drawn *around* it as a halo rather than
+            # replacing it: the two say different things, and when the bot
+            # stops on the last street at the end of mapping, "every street is
+            # green" is exactly the thing worth being able to see.
+            if is_visited:
+                colour, width = VISITED_COLOUR, 3
+            else:
+                colour, width = UNVISITED_COLOUR, 2
 
-            for u, v, key, data in edges:
-                rad = self.edge_rad.get(key, 0.0)
+            if is_current:
+                self._draw_curved_edge(ax, u, v, rad, CURRENT_COLOUR,
+                                       width + 6, zorder=0)
 
-                is_current = key == current_edge_key
-                is_visited = data.get("visited", False)
-                has_gate = data.get("gate_id") is not None
+            self._draw_curved_edge(ax, u, v, rad, colour, width)
 
-                if is_current:
-                    edge_color = "#E8483C"
-                    width = 5
-                elif is_visited:
-                    edge_color = "#2A9D8F"
-                    width = 3
-                else:
-                    edge_color = "#BBBBBB"
-                    width = 2
+            # (b) the chosen path, laid over the map
+            if key in route_positions:
+                self._draw_curved_edge(ax, u, v, rad, ROUTE_COLOUR, width + 3,
+                                       linestyle=(0, (4, 3)), zorder=2)
 
-                self._draw_curved_edge(
-                    ax=ax,
-                    u=u,
-                    v=v,
-                    rad=rad,
-                    color=edge_color,
-                    width=width
-                )
-
-                label_pos = self._bezier_point(
-                    self.pos[u],
-                    self.pos[v],
-                    0.5,
-                    rad
-                )
-
-                label_x, label_y = label_pos[0], label_pos[1]
-
-                label = str(key)
-
-                ports = data.get("ports", {})
-                if u in ports and v in ports:
-                    label += f"\n{u}{ports[u]} ↔ {v}{ports[v]}"
-
-                if has_gate:
-                    label += f"\nGate {data.get('gate_id')}"
-
-                if is_current:
-                    label += "\nCURRENT"
-
-                if is_visited and not is_current:
-                    label += "\nvisited"
-
+                marker = self._bezier_point(self.pos[u], self.pos[v], 0.30, rad)
                 ax.text(
-                    label_x,
-                    label_y,
-                    label,
-                    fontsize=10,
-                    ha="center",
-                    va="center",
-                    zorder=5,
-                    bbox=dict(
-                        boxstyle="round,pad=0.35",
-                        fc="white",
-                        ec=edge_color,
-                        lw=2,
-                        alpha=0.95
-                    )
+                    marker[0], marker[1],
+                    ",".join(str(step) for step in route_positions[key]),
+                    fontsize=10, fontweight="bold", color="white",
+                    ha="center", va="center", zorder=9,
+                    bbox=dict(boxstyle="circle,pad=0.3", fc=ROUTE_COLOUR,
+                              ec="white", lw=1.5),
                 )
 
-                # Draw the gate as an additional symbol on the edge
-                if has_gate:
-                    gate_pos = self._bezier_point(
-                        self.pos[u],
-                        self.pos[v],
-                        0.62,
-                        rad
-                    )
+            label = str(key)
+            ports = data.get("ports", {})
+            if u in ports and v in ports:
+                label += f"\n{u}{ports[u]} <-> {v}{ports[v]}"
+            # Measured drive time: intersection exit to stopped at the next red
+            # line. This is what the planner charges for the street, so seeing
+            # it on the map is how a bad measurement gets noticed.
+            street_time = self.street_times.get(key)
+            if street_time is not None:
+                label += f"\n{street_time:.1f} s"
+            if gate_id is not None:
+                colour_name = data.get("gate_colour") or "?"
+                label += f"\nGate {gate_id} ({colour_name})"
+            # Both facts, not one or the other: a street can be driven *and* be
+            # the one the bot is on.
+            marks = [name for name, on in (("visited", is_visited),
+                                           ("CURRENT", is_current)) if on]
+            if marks:
+                label += "\n" + ", ".join(marks)
 
-                    gate_x, gate_y = gate_pos[0], gate_pos[1]
+            label_pos = self._bezier_point(self.pos[u], self.pos[v], 0.5, rad)
+            ax.text(label_pos[0], label_pos[1], label, fontsize=9,
+                    ha="center", va="center", zorder=5,
+                    bbox=dict(boxstyle="round,pad=0.35", fc="white",
+                              ec=CURRENT_COLOUR if is_current else colour,
+                              lw=2, alpha=0.95))
 
-                    ax.scatter(
-                        [gate_x],
-                        [gate_y],
-                        s=220,
-                        marker="s",
-                        c=self._color_for_gate(data.get("gate_color")),
-                        edgecolors="black",
-                        linewidths=1.5,
-                        zorder=7
-                    )
+            if gate_id is not None:
+                # Well clear of the label box, which sits at t=0.5 and is several
+                # lines tall on a street that has a gate.
+                gate_pos = self._bezier_point(self.pos[u], self.pos[v], 0.80, rad)
 
-                    ax.text(
-                        gate_x,
-                        gate_y + 0.18,
-                        f"#{data.get('gate_id')}",
-                        fontsize=9,
-                        ha="center",
-                        va="bottom",
-                        zorder=8,
-                        bbox=dict(
-                            boxstyle="round,pad=0.2",
-                            fc="white",
-                            ec="black",
-                            alpha=0.9
-                        )
-                    )
+                # During the run, a gate's marker says where it is *in the
+                # order*: done, next, or still to come. The gate's own colour is
+                # kept as the fill so it stays identifiable either way.
+                if gate_id in done_gates:
+                    edge_colour, edge_width = VISITED_COLOUR, 3.5
+                    tag = f"#{gate_id} PASSED"
+                    tag_edge = VISITED_COLOUR
+                elif gate_id == next_gate:
+                    edge_colour, edge_width = ROUTE_COLOUR, 3.5
+                    tag = f"#{gate_id} NEXT"
+                    tag_edge = ROUTE_COLOUR
+                else:
+                    edge_colour, edge_width = "black", 1.5
+                    tag = f"#{gate_id}"
+                    tag_edge = "black"
+                    if gate_id in gate_order:
+                        tag = f"#{gate_id} ({gate_order.index(gate_id) + 1})"
 
-        # Highlight approaching node
+                ax.scatter([gate_pos[0]], [gate_pos[1]], s=240, marker="s",
+                           c=self._gate_hex(gate_id), edgecolors=edge_colour,
+                           linewidths=edge_width, zorder=7)
+                ax.text(gate_pos[0], gate_pos[1] + 0.18, tag,
+                        fontsize=9, ha="center", va="bottom", zorder=8,
+                        bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                  ec=tag_edge, lw=1.5, alpha=0.9))
+
+        # (c) where the bot thinks it is going next
         if approaching_node in self.pos:
-            ax.scatter(
-                [self.pos[approaching_node][0]],
-                [self.pos[approaching_node][1]],
-                s=2600,
-                facecolors="none",
-                edgecolors="#FFD400",
-                linewidths=4,
-                zorder=6
-            )
+            ax.scatter([self.pos[approaching_node][0]],
+                       [self.pos[approaching_node][1]],
+                       s=2600, facecolors="none", edgecolors=NEXT_NODE_COLOUR,
+                       linewidths=4, zorder=6)
 
-        # Info box
-        reason = None
-        last_turn = None
-        active_mode = None
-        tag_id = None
-
-        if self.latest_state is not None:
-            reason = self.latest_state.get("reason")
-            last_turn = self.latest_state.get("last_turn_direction")
-            active_mode = self.latest_state.get("active_mode")
-            tag_id = self.latest_state.get("tag_id")
-
-        info_lines = [
-            f"Reason: {reason}",
-            f"Mode: {active_mode}",
-            f"Last turn: {last_turn}",
-            f"Current edge: {current_edge}",
-            f"Edge key: {current_edge_key}",
-            f"Approaching node: {approaching_node}",
-            f"Available: {available_directions}",
-        ]
-
-        if tag_id is not None:
-            info_lines.append(f"Detected gate: {tag_id}")
-
-        ax.text(
-            0.02,
-            0.02,
-            "\n".join(info_lines),
-            transform=ax.transAxes,
-            fontsize=10,
-            va="bottom",
-            ha="left",
-            zorder=10,
-            bbox=dict(
-                boxstyle="round,pad=0.45",
-                fc="white",
-                ec="black",
-                alpha=0.92
-            )
-        )
-
-        # Legend
-        legend_text = (
-            "Red = current edge\n"
-            "Green = visited\n"
-            "Gray = not visited\n"
-            "Yellow ring = next node\n"
-            "Square = detected gate"
-        )
-
-        ax.text(
-            0.98,
-            0.02,
-            legend_text,
-            transform=ax.transAxes,
-            fontsize=10,
-            va="bottom",
-            ha="right",
-            zorder=10,
-            bbox=dict(
-                boxstyle="round,pad=0.45",
-                fc="white",
-                ec="black",
-                alpha=0.92
-            )
-        )
+        self._draw_info_box(ax, state, graph_state, plan_state, mission)
+        self._draw_legend(ax)
 
         ax.axis("off")
 
-        # Automatically expand the visible layout area
         xs = [p[0] for p in self.pos.values()]
         ys = [p[1] for p in self.pos.values()]
-
-        margin_x = 1.2
-        margin_y = 3.0
-
-        ax.set_xlim(min(xs) - margin_x, max(xs) + margin_x)
-        ax.set_ylim(min(ys) - margin_y, max(ys) + margin_y)
+        ax.set_xlim(min(xs) - 1.6, max(xs) + 1.6)
+        ax.set_ylim(min(ys) - 2.4, max(ys) + 2.4)
 
         plt.tight_layout()
-
         fig.canvas.draw()
+
         width, height = fig.canvas.get_width_height()
-
-        img_rgb = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        img_rgb = img_rgb.reshape((height, width, 3))
-
-        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        image = image.reshape((height, width, 3))
 
         plt.close(fig)
 
-        return img_bgr
+        return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-    # ---------------------------------------------------------------------
-    # Main Loop
-    # ---------------------------------------------------------------------
+    def _draw_info_box(self, ax, state, graph_state, plan_state, mission):
+        lines = [
+            f"Phase: {mission.get('phase')}",
+            f"Mode: {state.get('active_mode')}",
+            f"Position: {graph_state.get('current_edge_key')} "
+            f"-> node {graph_state.get('approaching_node')} "
+            f"(port {graph_state.get('entry_port')})",
+            f"Available: {graph_state.get('available_directions')}",
+            f"Next turn: {plan_state.get('next_turn')}",
+            f"Plan: {plan_state.get('note')}",
+        ]
+
+        route = plan_state.get("route_edge_keys") or []
+        if route:
+            lines.append(f"Route: {' -> '.join(route)}")
+            lines.append(f"Estimated: {plan_state.get('estimated_cost')} s")
+
+        gate_order = mission.get("gate_order") or []
+        if gate_order:
+            done, next_gate, pending = gate_detection.gate_run_progress(
+                gate_order, mission.get("gates_sighted")
+            )
+            lines.append(f"Gates: {len(done)}/{len(gate_order)} seen {done}, "
+                         f"next {next_gate}")
+
+            # Where the route is heading, which runs ahead of what has been
+            # seen -- the two differing is normal, not a fault.
+            routing_to = mission.get("remaining_gates") or []
+            if routing_to != pending:
+                lines.append(f"       routing to {routing_to}")
+
+            elapsed = mission.get("gate_run_elapsed")
+            estimate = mission.get("gate_run_estimate")
+            if elapsed is not None and estimate:
+                lines.append(f"Run: {elapsed:.1f}s elapsed of ~{estimate:.0f}s")
+
+        unvisited = graph_state.get("unvisited_edges")
+        if unvisited:
+            lines.append(f"Unvisited: {', '.join(unvisited)}")
+
+        timing = state.get("timing", {})
+        turn_times = timing.get("turn_times") or {}
+        if turn_times:
+            lines.append("Turns: " + ", ".join(
+                f"{name} {value:.1f}s" for name, value in sorted(turn_times.items())
+            ))
+
+        # After mapping the bot is picked up and placed for the gate run, so
+        # this is the number the operator actually needs off the screen.
+        for rank, option in enumerate(state.get("start_recommendations") or [], 1):
+            if rank == 1:
+                lines.append("Best gate-run start positions:")
+            lines.append(f"  {rank}. start_edge:={option['start_edge_arg']} "
+                         f"({option['cost']:.0f}s)")
+
+        if mission.get("halted"):
+            lines.append(">> HOLDING AT RED LINE <<")
+
+        if mission.get("localization_ok") is False:
+            lines.append("!! LOCALIZATION LOST !!")
+
+        ax.text(0.02, 0.02, "\n".join(lines), transform=ax.transAxes,
+                fontsize=9, va="bottom", ha="left", zorder=10, family="monospace",
+                bbox=dict(boxstyle="round,pad=0.45", fc="white", ec="black",
+                          alpha=0.92))
+
+    def _draw_legend(self, ax):
+        ax.text(
+            0.98, 0.02,
+            "Red halo = current street\n"
+            "Green  = already driven\n"
+            "Gray   = not driven yet\n"
+            "Blue   = planned path\n"
+            "Ring   = next intersection\n"
+            "Square = gate found\n"
+            "  green border = gate seen\n"
+            "  blue border  = gate next\n"
+            "N.N s  = measured drive time",
+            transform=ax.transAxes, fontsize=9, va="bottom", ha="right",
+            zorder=10, family="monospace",
+            bbox=dict(boxstyle="round,pad=0.45", fc="white", ec="black",
+                      alpha=0.92),
+        )
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
     def run(self):
         rate = rospy.Rate(10)
 
         while not rospy.is_shutdown():
             if self.latest_state is not None and self.dirty:
-                img = self._draw_to_image()
+                image = self._draw_to_image()
 
-                cv2.imshow(self.window_name, img)
-                cv2.waitKey(1)
+                if self.snapshot_path:
+                    cv2.imwrite(self.snapshot_path, image)
+
+                if not self.headless:
+                    cv2.imshow(self.window_name, image)
 
                 self.dirty = False
-            else:
+
+            if not self.headless:
                 cv2.waitKey(1)
 
             rate.sleep()
 
-        cv2.destroyAllWindows()
+        if not self.headless:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
     try:
-        node = MappingVisualizationNode()
-        node.run()
+        MappingVisualizationNode().run()
     except rospy.ROSInterruptException:
         pass

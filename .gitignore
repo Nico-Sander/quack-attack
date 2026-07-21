@@ -2,6 +2,8 @@ build/*
 devel/*
 .catkin_workspace
 __pycache__/
+.pytest_cache/
+.venv/
 .env
 .vscode/
 *.bkp

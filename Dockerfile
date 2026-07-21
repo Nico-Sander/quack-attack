@@ -26,9 +26,22 @@ RUN pip3 install --no-cache-dir --ignore-installed \
     ultralytics \
     pytest
 
-# 2. The GUI Fix! 
+# 1b. Explicit runtime dependencies of the mapping_pathfinding package.
+# These used to arrive only transitively (networkx and matplotlib ride in on
+# torch/ultralytics) or had to be pip-installed by hand inside a running
+# container (pupil-apriltags). Declaring them here makes the image reproducible.
+# Kept in a separate layer so editing this list does not invalidate the
+# expensive torch layer above.
+RUN pip3 install --no-cache-dir \
+    networkx \
+    matplotlib \
+    pupil-apriltags \
+    PyYAML
+
+# 2. The GUI Fix!
 # Albumentations automatically sneaks 'opencv-python-headless' in as a hidden dependency.
 # We must explicitly uninstall it right after so ROS falls back to its native GUI-enabled cv2.
+# This must stay AFTER every pip install above, since any of them may pull it back in.
 RUN pip3 uninstall -y opencv-python-headless
 
 WORKDIR /workspace

@@ -1,0 +1,165 @@
+<?xml version="1.0"?>
+<!--
+  Challenge 4: mapping and path finding.
+
+  Typical use:
+
+    Mapping phase (explore the whole city, record every gate):
+      roslaunch mapping_pathfinding mapping_pathfinding.launch \
+          start_edge:=A,1,B,1
+
+    Timed gate run (order announced on site, given as tag IDs):
+      roslaunch mapping_pathfinding mapping_pathfinding.launch \
+          mission_phase:=GATE_RUN start_edge:=C,4,B,3 gate_order:=7,5,11
+
+    Bring-up without motors (perception + planner only):
+      roslaunch mapping_pathfinding mapping_pathfinding.launch driving:=false
+
+    Verify the planner -> switch_control command path:
+      roslaunch mapping_pathfinding mapping_pathfinding.launch force_turn:=LEFT
+-->
+<launch>
+
+  <!-- ================= general ================= -->
+  <!-- optenv, not env: the nodes themselves fall back to "default_robot" when
+       VEHICLE_NAME is missing, so the launch file must not be stricter than
+       they are. $(env ...) aborts the whole launch with a message that does not
+       mention the variable at all. Every node logs the name it ended up with,
+       so a wrong namespace shows up immediately in the console. -->
+  <!-- Note: no $(arg veh) in this doc string. roslaunch evaluates substitutions
+       inside doc attributes too, so referring to the arg being declared is a
+       self-reference and aborts the launch with a message that blames the env
+       var instead. -->
+  <arg name="veh" default="$(optenv VEHICLE_NAME default_robot)"
+       doc="Robot name; all topics are namespaced under it."/>
+
+  <arg name="city_path" default="$(find mapping_pathfinding)/config/city.json"
+       doc="The city graph. Single source of truth for every node."/>
+  <arg name="gates_path" default="$(find mapping_pathfinding)/config/gates.json"
+       doc="Gate tag ID -> colour mapping (cosmetic, for logs and display)."/>
+
+  <!-- ================= mission ================= -->
+  <arg name="mission_phase" default="MAPPING"
+       doc="MAPPING (explore every street) or GATE_RUN (timed run)."/>
+
+  <arg name="start_edge" default="A,1,B,1"
+       doc="Where the bot is placed, as from_node,from_port,to_node,to_port.
+            'A,1,B,1' means: driving from A port 1 towards B port 1, so the
+            next intersection is B. The start pose is given, per the sheet."/>
+
+  <arg name="gate_run_start_edge" default=""
+       doc="Optional different start street for the gate run; the sheet allows
+            the two phases to start in different places. Empty = keep going
+            from wherever the mapping phase ended."/>
+
+  <arg name="gate_order" default=""
+       doc="The gate tag IDs in the order announced on site, e.g. '7,5,11'.
+            Never hard-coded in the source; the route is derived from the map
+            that was built at runtime."/>
+
+  <arg name="strict_gate_order" default="false"
+       doc="Route around gates that are not due yet. Falls back to the direct
+            route when avoiding them is impossible."/>
+
+  <arg name="auto_start_gate_run" default="false"
+       doc="Start the gate run automatically once every street has been driven.
+            Otherwise call the ~start_gate_run service."/>
+
+  <!-- ================= tuning ================= -->
+  <arg name="gate_cooldown" default="2.0"
+       doc="Seconds before the same gate tag is recorded again. Stops one gate
+            being re-logged frame after frame."/>
+
+  <arg name="command_timeout" default="1.0"
+       doc="How long a planner turn command stays trustworthy. The mapping node
+            republishes at 10 Hz, so anything older means it stopped talking and
+            switch_control drives on its own again."/>
+
+  <arg name="sign_cooldown" default="0.1"
+       doc="Per-tag detection cooldown in detect_signs."/>
+
+  <arg name="gate_min_area" default="-1"
+       doc="Override the minimum detected tag area, in pixels, for a gate to
+            count as being on the street the bot is driving. The calibrated
+            value lives in config/config.json (detect_signs.gate_min_area);
+            leave this at -1 to use it. Set a positive value only to sweep the
+            threshold, e.g. when recalibrating with dashboard:=true."/>
+
+  <arg name="gate_confirm_frames" default="3"
+       doc="Consecutive accepted sightings before a gate is written to the map.
+            A gate is written once and never overwritten, so this is what stops
+            a single bad frame from being permanent."/>
+
+  <arg name="map_gates_while_approaching" default="true"
+       doc="Record gates while approaching a stop line. The bot is still on its
+            own street there, so gates near the far end are still valid; set
+            false if the area threshold alone turns out not to be enough.
+            Gate mapping is always off while stopped and while crossing."/>
+
+  <!-- ================= debugging ================= -->
+  <arg name="force_turn" default="NONE"
+       doc="LEFT/STRAIGHT/RIGHT forces every turn and bypasses the planner.
+            Used to check the command path end to end."/>
+
+  <arg name="driving" default="true"
+       doc="Set false to run perception, mapping and planning without moving."/>
+  <arg name="visualization" default="true"
+       doc="Live map/path/position window."/>
+  <arg name="dashboard" default="false"
+       doc="Perception debug dashboard (camera and segmentation masks)."/>
+
+  <group ns="$(arg veh)">
+
+    <!-- ================= perception ================= -->
+    <node name="detect_lane_node" pkg="mapping_pathfinding"
+          type="detect_lane.py" output="screen"/>
+
+    <node name="detect_intersection_node" pkg="mapping_pathfinding"
+          type="detect_intersection.py" output="screen"/>
+
+    <node name="detect_signs_node" pkg="mapping_pathfinding"
+          type="detect_signs.py" output="screen">
+      <param name="cooldown" value="$(arg sign_cooldown)"/>
+      <param name="gate_min_area" value="$(arg gate_min_area)"/>
+    </node>
+
+    <!-- ================= decision and control ================= -->
+    <node name="switch_control_node" pkg="mapping_pathfinding"
+          type="switch_control.py" output="screen">
+      <param name="command_timeout" value="$(arg command_timeout)"/>
+    </node>
+
+    <node name="control_wheels_node" pkg="mapping_pathfinding"
+          type="control_wheels.py" output="screen" if="$(arg driving)"/>
+
+    <!-- ================= mapping and planning ================= -->
+    <node name="mapping_pathplanning_node" pkg="mapping_pathfinding"
+          type="mapping_pathplanning.py" output="screen">
+      <param name="city_path" value="$(arg city_path)"/>
+      <param name="gates_path" value="$(arg gates_path)"/>
+      <param name="start_edge" value="$(arg start_edge)"/>
+      <param name="mission_phase" value="$(arg mission_phase)"/>
+      <param name="gate_order" value="$(arg gate_order)"/>
+      <param name="gate_run_start_edge" value="$(arg gate_run_start_edge)"/>
+      <param name="strict_gate_order" value="$(arg strict_gate_order)"/>
+      <param name="auto_start_gate_run" value="$(arg auto_start_gate_run)"/>
+      <param name="force_turn" value="$(arg force_turn)"/>
+      <param name="gate_cooldown" value="$(arg gate_cooldown)"/>
+      <param name="gate_confirm_frames" value="$(arg gate_confirm_frames)"/>
+      <param name="map_gates_while_approaching"
+             value="$(arg map_gates_while_approaching)"/>
+    </node>
+
+    <!-- ================= visualization ================= -->
+    <node name="mapping_visualization_node" pkg="mapping_pathfinding"
+          type="visualization.py" output="screen" if="$(arg visualization)">
+      <param name="city_path" value="$(arg city_path)"/>
+      <param name="gates_path" value="$(arg gates_path)"/>
+    </node>
+
+    <node name="dashboard_node" pkg="mapping_pathfinding"
+          type="dashboard.py" output="screen" if="$(arg dashboard)"/>
+
+  </group>
+
+</launch>

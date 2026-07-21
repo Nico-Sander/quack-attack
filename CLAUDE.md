@@ -2,7 +2,7 @@
 
 - Parts of the mapping have already been implemented.
 
-- You can find all relevant information about what this package needs to achieve in `src/packages/docs`:
+- You can find all relevant information about what this package needs to achieve in `src/packages/mapping_pathfinding/docs`:
     - `01-information.md` contains all the original information about the challenge the package needs fulfill
     - `02-additional-information.md` contains additional information given to us including some of my initial thoughts, as well as strict requirements that need to be fulfilled. 
     - these files are in german, but the rest of the packages primary language should be english.
@@ -14,7 +14,7 @@
     - `attach_tmux.sh`: Creating a new tmux session with 4 panes attached to the running container
 
 - Claude Fable 5 (which is more capable than you Claude Opus 4.8) already analyzed the current state and came up with a plan to complete the challenge. It generated two files in `src/packages/mapping_pathfinding/docs/`:
-    - `current_implementation-fable.md`: An analysis of what the architecture / package can already do now
+    - `current_implementation-fable-analysis.md`: An analysis of what the architecture / package can already do now
     - `plan-fable.md`: A detailed plan of the steps necessary to complete all of the requirements for this package. This is what needs to be implemented!
 
 - General instructions:
