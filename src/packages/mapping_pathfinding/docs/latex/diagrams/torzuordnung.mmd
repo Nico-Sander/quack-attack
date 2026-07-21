@@ -1,0 +1,24 @@
+%% Ablaufdiagramm der Torzuordnung (eine Detektion)
+%% Alle Zeilenumbrueche stehen explizit als <br>: mermaid bricht sonst nach
+%% einzelnen Woertern um, was die Kaesten unnoetig gross macht.
+%% Alle Ablehnungen laufen in EINEN Kasten, der Grund steht an der Kante.
+%% Fuenf einzelne "verwerfen"-Kaesten haben das Bild so breit gemacht, dass die
+%% Schrift im Dokument nicht mehr lesbar war.
+%%{init: {"themeVariables": {"fontSize": "34px"}, "flowchart": {"nodeSpacing": 30, "rankSpacing": 45, "padding": 10}}}%%
+flowchart LR
+  A["Detektion auf<br>/detect/sign_detections"] --> B{"faehrt der Bot?<br>weder STOPPED noch CROSSING"}
+  B -- "nein" --> X
+  B -- "ja" --> C{"Tag ID ist ein Tor?<br>1 bis 4 sind Kreuzungsschilder"}
+  C -- "nein" --> X
+  C -- "ja" --> D{"Flaeche mindestens gate_min_area?"}
+  D -- "nein" --> X
+  D -- "ja" --> E{"gate_confirm_frames mal dieselbe<br>Strasse und dasselbe Tor?"}
+  E -- "nein" --> W["Streak hochzaehlen,<br>noch nicht schreiben"]
+  E -- "ja" --> F{"Strasse traegt bereits ein Tor?"}
+  F -- "ja" --> X
+  F -- "nein" --> G["Tor auf Strasse schreiben,<br>dauerhaft"]
+
+  X["Detektion verwerfen"]
+
+  style G fill:#cfc,stroke:#282
+  style X fill:#fdd,stroke:#a44

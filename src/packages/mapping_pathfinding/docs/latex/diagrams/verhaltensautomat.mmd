@@ -1,0 +1,29 @@
+%% Verhaltensautomat switch_control (Fahrmodus)
+%% Es gibt KEINEN DriveMode HOLD: der Halt am Ende der Kartierung ist
+%% STOPPED, festgehalten durch TURN_COMMAND_HALT. Darum eine Schleife an
+%% STOPPED statt eines eigenen Zustands.
+%% Die Zeitmessung von run_timing steht in der Bildunterschrift, nicht im
+%% Diagramm: als Notizkasten hat sie es doppelt so hoch gemacht.
+%%{init: {"themeVariables": {"fontSize": "22px"}}}%%
+stateDiagram-v2
+  direction TB
+  [*] --> LANE_FOLLOWING
+
+  LANE_FOLLOWING: LANE_FOLLOWING
+  LANE_FOLLOWING: PID auf Querabstandsfehler
+
+  APPROACHING: APPROACHING
+  APPROACHING: milde Verzoegerung
+
+  STOPPED: STOPPED
+  STOPPED: Halt an der Haltelinie
+
+  CROSSING: CROSSING
+  CROSSING: fester Bogen, Richtung aus Kommando
+
+  LANE_FOLLOWING --> APPROACHING: rote Linie ueber Schwellwert
+  APPROACHING --> STOPPED: Haltelinie erreicht
+  STOPPED --> CROSSING: Haltedauer abgelaufen<br>+ Abbiegekommando
+  CROSSING --> LANE_FOLLOWING: Markierungen wieder sichtbar<br>(Dauer nur als Notausstieg)
+  STOPPED --> STOPPED: TURN_COMMAND_HALT
+  STOPPED --> LANE_FOLLOWING: /plan/resume_driving

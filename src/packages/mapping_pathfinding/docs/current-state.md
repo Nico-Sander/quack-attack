@@ -283,6 +283,30 @@ curve matplotlib never drew. Layout claims are only worth anything when the
 image is actually looked at: render one with `~headless` + `~snapshot_path`
 rather than trusting the numbers.
 
+### Rendering the map without a robot
+
+`tests/render_example_visualization.py` writes a PNG of the visualization
+window with no roscore, no camera and no Duckiebot. It stubs `rospy`, then
+drives the real `GraphMap` through a real exploration and plans the gate run
+with the real planner, so the picture is the actual renderer against an actual
+plan — only ROS is faked. Used for the figure in `docs/latex/`, and it is the
+cheapest way to look at a layout change.
+
+```bash
+# host, if matplotlib/cv2/networkx are installed
+python3 src/packages/mapping_pathfinding/tests/render_example_visualization.py
+# otherwise, in the image (needs no robot and no ROS master)
+docker run --rm -v "$PWD:/workspace" -w /workspace --entrypoint python3 \
+    quack-attack-duckierace_env:latest \
+    src/packages/mapping_pathfinding/tests/render_example_visualization.py
+```
+
+It also surfaced a cosmetic issue worth knowing about before a demo: with every
+street carrying a time and a gate, the label boxes of the two parallel streets
+between A and C overlap. Nothing is wrong with the geometry — the streets
+themselves stay clear of each other — but the two labels sit almost on top of
+one another.
+
 ### Found on the robot
 
 **Left and right were mirrored.** `LEFT_OF`/`RIGHT_OF` were swapped, so the
