@@ -3,10 +3,10 @@
       Obstacle-avoidance stack (lean: reactive follow-the-gap, no memory/mapping).
 
       Normal driving stack:
-          roslaunch obstacle_detection obstacle_detection_stack.launch
+          roslaunch ch3_obstacle_avoidance ch3_obstacle_avoidance.launch
 
       Tuning / dry run - full stack, dashboard fully populated, robot stationary:
-          roslaunch obstacle_detection obstacle_detection_stack.launch controller:=false
+          roslaunch ch3_obstacle_avoidance ch3_obstacle_avoidance.launch controller:=false
 
       controller:=false does NOT stop the controller node. The node runs and plans
       exactly as it normally would; it just never publishes a drive command. That
@@ -42,11 +42,11 @@
          doc="Start control_lane_node at all. Use controller:=false for a dry run instead." />
 
     <!-- Lane Detection (segmentation, lane error, lane borders) -->
-    <node pkg="obstacle_detection" type="detect_lane_node.py" name="detect_lane_node"
+    <node pkg="ch3_obstacle_avoidance" type="detect_lane_node.py" name="detect_lane_node"
           output="screen" if="$(arg lane)" />
 
     <!-- Duckie Detection (YOLO) -> /detect/duckie_BB -->
-    <node pkg="obstacle_detection" type="detect_obstacle_node.py" name="detect_obstacle_node"
+    <node pkg="ch3_obstacle_avoidance" type="detect_obstacle_node.py" name="detect_obstacle_node"
           output="screen" if="$(arg detector)" />
 
     <!--
@@ -56,12 +56,12 @@
       car_cmd_switch_node/cmd; with controller:=false it registers no publisher on
       that topic at all, so the invariant holds trivially during a dry run.
     -->
-    <node pkg="obstacle_detection" type="control_lane_node.py" name="control_lane_node"
+    <node pkg="ch3_obstacle_avoidance" type="control_lane_node.py" name="control_lane_node"
           output="screen" if="$(arg controller_node)">
         <param name="publish_cmd" value="$(arg controller)" />
     </node>
 
     <!-- Dashboard/UI -->
-    <node pkg="obstacle_detection" type="dashboard_node.py" name="dashboard_node"
+    <node pkg="ch3_obstacle_avoidance" type="dashboard_node.py" name="dashboard_node"
           if="$(arg dashboard)" />
 </launch>

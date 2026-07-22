@@ -40,7 +40,7 @@ from duckietown_msgs.msg import Twist2DStamped
 # still runs on the JSON values instead of refusing to start mid-session.
 try:
     from dynamic_reconfigure.server import Server
-    from obstacle_detection.cfg import ControlLaneConfig
+    from ch3_obstacle_avoidance.cfg import ControlLaneConfig
     DYNAMIC_RECONFIGURE = True
 except Exception:
     DYNAMIC_RECONFIGURE = False

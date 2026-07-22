@@ -131,7 +131,7 @@ erhöhen für mehr Sicherheitsabstand zu sichtbaren Linien.
 Starten mit:
 
 ```bash
-QT_X11_NO_MITSHM=1 rosrun obstacle_detection dashboard_node.py
+QT_X11_NO_MITSHM=1 rosrun ch3_obstacle_avoidance dashboard_node.py
 ```
 
 Optional:

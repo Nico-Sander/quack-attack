@@ -1,4 +1,4 @@
-# obstacle_detection
+# ch3_obstacle_avoidance
 
 ROS-Package für die Duckiebot-Challenge **„Enten auf der Straße umfahren“**.
 
@@ -29,7 +29,7 @@ Der wichtigste Node ist `control_lane_node.py`. Er nutzt Lane-Following als Rout
 ## Package-Struktur
 
 ```text
-obstacle_detection/
+ch3_obstacle_avoidance/
 ├── config/
 │   ├── control_lane_node.json        # 14 Parameter für Regler, Ausweichen und Recovery
 │   └── detect_obstacle_node.json     # Parameter für YOLO-Duckie-Erkennung
@@ -146,10 +146,10 @@ source devel/setup.bash
 Dann in separaten Terminals:
 
 ```bash
-rosrun obstacle_detection dashboard_node.py
-rosrun obstacle_detection detect_lane_node.py
-rosrun obstacle_detection detect_obstacle_node.py
-rosrun obstacle_detection control_lane_node.py
+rosrun ch3_obstacle_avoidance dashboard_node.py
+rosrun ch3_obstacle_avoidance detect_lane_node.py
+rosrun ch3_obstacle_avoidance detect_obstacle_node.py
+rosrun ch3_obstacle_avoidance control_lane_node.py
 
 ```
 

@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>obstacle_detection</name>
+  <name>ch3_obstacle_avoidance</name>
   <version>0.0.1</version>
   <description>Obstacle detection package for Duckiebot using YOLO</description>
 
