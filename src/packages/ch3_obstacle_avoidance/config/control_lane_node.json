@@ -1,0 +1,133 @@
+{
+  "debug_image_topics": [],
+  "parameters": {
+    "controller": {
+      "v_cruise": {
+        "default": 0.08,
+        "min": 0.0,
+        "max": 0.3,
+        "help": "Forward speed with a clear road (lane following)."
+      },
+      "v_avoid": {
+        "default": 0.07,
+        "min": 0.0,
+        "max": 0.3,
+        "help": "Forward speed while steering around a duckie (far end of the proximity ramp)."
+      },
+      "v_min": {
+        "default": 0.05,
+        "min": 0.0,
+        "max": 0.3,
+        "help": "Creep floor, above the ~0.05 friction stall limit with a small margin. Used when close to a duckie or in unknown geometry."
+      },
+      "k_steer": {
+        "default": 6.0,
+        "min": 0.0,
+        "max": 10.0,
+        "help": "Proportional steering gain. omega = k_steer * (0.5 - target_x) * 2, which equals k_steer * lane_error in lane following - i.e. this IS the lane P-gain. Matches the proven Challenge-1 value; raise if the bot understeers and crosses lines, lower if it oscillates."
+      },
+      "omega_rotate": {
+        "default": 1.7,
+        "min": 0.0,
+        "max": 4.0,
+        "help": "In-place rotation rate in ESCAPE_ROTATE. Must be high enough to break static friction when v=0 - too low and the bot buzzes but does not turn."
+      },
+      "omega_max": {
+        "default": 3.0,
+        "min": 0.0,
+        "max": 5.0,
+        "help": "Hard cap on |omega| for any command. 4 = the 'very abrupt' end of the usable range."
+      },
+      "lane_margin": {
+        "default": 0.05,
+        "min": 0.0,
+        "max": 0.3,
+        "help": "Hard inset from each detected line. The steerable corridor is [left_wall+margin, right_wall-margin]."
+      },
+      "react_ymax": {
+        "default": 0.68,
+        "min": 0.0,
+        "max": 1.0,
+        "help": "Closeness (ymax, bottom-of-frame = closer) a duckie must reach before it counts at all - creates its blocked interval and can trigger avoidance. HIGHER = react closer/later, LOWER = react farther/earlier. This is the knob for 'reacts too early'. Keep it below front_slow_ymax."
+      },
+      "front_slow_ymax": {
+        "default": 0.7,
+        "min": 0.0,
+        "max": 1.0,
+        "help": "Nearest front-duckie ymax where forward speed starts ramping down toward v_min. Keep above react_ymax."
+      },
+      "front_block_ymax": {
+        "default": 0.8,
+        "min": 0.0,
+        "max": 1.0,
+        "help": "Nearest front-duckie ymax where the front is considered blocked (no forward path) -> ESCAPE_ROTATE."
+      },
+      "escape_min_dwell": {
+        "default": 0.2,
+        "min": 0.0,
+        "max": 5.0,
+        "help": "Minimum time to stay in ESCAPE_ROTATE before it may exit (anti-chatter). NOTE: escape_min_dwell * omega_rotate is the minimum angle swept before the bot can reconsider - at 0.25 * 1.5 that is ~21 deg. Push it much higher and the lane lines leave the camera frame before the state can be re-evaluated, which is how the bot ends up driving blind."
+      },
+      "avoid_min_dwell": {
+        "default": 1.6,
+        "min": 0.0,
+        "max": 5.0,
+        "help": "Seconds AVOID is held once it starts on a passable gap, even if the gap momentarily measures narrower than gap_min_width. This is the 'drive through it confidently' knob. Duckie inflation grows with proximity (duckie_margin_base + duckie_margin_gain * ymax), so a gap accepted at range ALWAYS narrows as the bot approaches it - without a dwell the manoeuvre aborts partway through by construction. A duckie genuinely close ahead (front_block_ymax) still aborts immediately, so raising this does not disable the safety stop. Raise if the bot still gives up mid-gap; lower if it commits to gaps it should have rejected."
+      },
+      "lane_hold_frames": {
+        "default": 14,
+        "min": 0,
+        "max": 60,
+        "help": "Consecutive invalid lane-border readings before that side's line is treated as absent and the corridor opens on that side. This is line MEMORY: while the streak is below this, the last known line position is still enforced as a hard wall. Too low and a brief loss of sight (e.g. mid-rotation) releases the constraint and the bot drives over the marking; too high and it keeps steering away from a line that is genuinely gone."
+      },
+      "duckie_hold_time": {
+        "default": 0.9,
+        "min": 0.0,
+        "max": 5.0,
+        "help": "Seconds a duckie's span is kept after detections stop arriving (blind pass). Raising it stops a spin from erasing the duckie that caused the escape; but the span is stored in IMAGE x, so a stale duckie sits at the wrong bearing once the bot has turned or driven past it. Above ~1.5 expect phantom obstacles. A proper fix needs heading-indexed memory."
+      },
+      "escape_relax_after": {
+        "default": 1.5,
+        "min": 0.0,
+        "max": 10.0,
+        "help": "After rotating this long with no passable gap, progressively relax gap_min_width and inflation until a gap opens (anti-permanent-freeze)."
+      },
+      "yellow_anchor": {
+        "default": 0.047,
+        "min": 0.0,
+        "max": 0.5,
+        "help": "Assumed x of the yellow line when only WHITE is visible - i.e. mid-U-turn, facing the outer wall. The goal column becomes (white_x + yellow_anchor)/2, so this sets how far left of the wall the bot aims, and therefore the U-turn radius. Lower = tighter turn. Was hidden in detect_lane_node's fallback constant."
+      },
+      "white_anchor": {
+        "default": 0.948,
+        "min": 0.5,
+        "max": 1.0,
+        "help": "Assumed x of the white line when only YELLOW is visible - i.e. entering the bulb with the entry lane's centre line still in view. Goal becomes (yellow_x + white_anchor)/2. Higher = steers further right of the yellow line. Was hidden in detect_lane_node's fallback constant."
+      },
+      "camera_width_k": {
+        "default": 0.382,
+        "min": 0.1,
+        "max": 1.0,
+        "help": "MEASURED, not tuned. Converts physical cm to normalized image width at range: width_image = cm * camera_width_k / distance_cm. Derived from the course data - apparent width x distance was constant at ~1.91 over a 68->8cm approach, divided by the duckie's real 5cm width. Re-measure only if the camera or its lens changes."
+      },
+      "robot_width_cm": {
+        "default": 13.0,
+        "min": 5.0,
+        "max": 40.0,
+        "help": "MEASURED, not tuned. Robot width at its widest point. Half of this is what must clear every obstacle, and it is what the front probe represents."
+      },
+      "safety_margin_cm": {
+        "default": 2.0,
+        "min": 0.0,
+        "max": 30.0,
+        "help": "How much clearance to leave when passing an obstacle, in cm - the real tuning knob. Each duckie is inflated by (robot_width_cm/2 + safety_margin_cm) converted at ITS range, so this stays correct at every distance. Raise if it clips duckies, lower if it refuses gaps it could take."
+      },
+      "gap_min_cm": {
+        "default": 2.4,
+        "min": 0.0,
+        "max": 30.0,
+        "help": "Extra lateral wiggle room required for the robot's CENTRE before a gap counts as passable, in cm. The robot's own width is already in the inflation, so this is control slack only - cover for steering error, not clearance. Raise if it commits to gaps it cannot hold a line through."
+      }
+    }
+  }
+}

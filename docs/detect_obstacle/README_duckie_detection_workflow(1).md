@@ -59,7 +59,7 @@ Zweck: Startet den zentralen ROS-Master. Ohne `roscore` können die Nodes nicht 
 docker exec -it duckie_ros bash
 cd /workspace
 source devel/setup.bash
-rosrun obstacle_detection detect_obstacle_node.py
+rosrun ch3_obstacle_avoidance detect_obstacle_node.py
 ```
 
 Zweck: Abonniert das Kamerabild, führt die YOLO-Duckie-Erkennung aus und published:
@@ -233,7 +233,7 @@ roscore
 docker exec -it duckie_ros bash
 cd /workspace
 source devel/setup.bash
-rosrun obstacle_detection detect_obstacle_node.py
+rosrun ch3_obstacle_avoidance detect_obstacle_node.py
 ```
 
 ### 4. Terminal 3

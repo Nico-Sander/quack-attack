@@ -1,0 +1,7 @@
+duckie
+duckiebot
+traffic_light
+qr_code
+stop_sign
+intersection_sign
+signal_sign

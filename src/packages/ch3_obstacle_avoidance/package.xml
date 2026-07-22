@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ch3_obstacle_avoidance</name>
+  <version>0.0.1</version>
+  <description>Obstacle detection package for Duckiebot using YOLO</description>
+
+  <maintainer email="todo@example.com">quack_attack</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>duckietown_msgs</depend>
+  <!-- Live parameter tuning via rqt_reconfigure. The node degrades to
+       JSON-only parameters if this is unavailable, so it is not load-bearing. -->
+  <depend>dynamic_reconfigure</depend>
+
+  <exec_depend>python3-opencv</exec_depend>
+
+  <export>
+  </export>
+</package>
