@@ -2,6 +2,10 @@
 
 Living document. Reflects the package as of **2026-07-22**.
 
+> **Renamed 2026-07-22:** the package was `mapping_pathfinding` and its launch
+> file `mapping_pathfinding.launch`. Both now carry the `ch4_` prefix, matching
+> `ch3_obstacle_avoidance`. Old `roslaunch`/`rosrun` commands will not resolve.
+
 Related: **[`test-plan.md`](test-plan.md) — what to run on the robot, in order**,
 **[`parameters.md`](parameters.md) — every launch arg and config knob in one
 place**, [`plan-fable.md`](plan-fable.md) (the work plan being executed),
