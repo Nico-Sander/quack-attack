@@ -1,23 +1,11 @@
-- You are working exclusively on the ch4_mapping_pathfinding ROS1 package in `src/packages/`
+- You are helping me build and clean up ros1 packages for a duckiebot challenge. 
+- All of the ros packages and their nodes run in a docker container defined by Dockerfile and docker-compose.yaml (entrypoint.sh)
+    - workflow: see start.sh and attach_tmux.sh
 
-- Parts of the mapping have already been implemented.
+- The packages for challenge 3 (ch3_obstacle_avoidance) and challenge 4 (ch4_mapping_pathplanning) are already implemented.
+- challenges 3 and 4 build upon challenge 1 (lane following and red line stopping) and challenge 2 (intersection driving)
+- Since challenges 3 and 4 built upon the results of challenges 1 and 2, the original challenge 1 and 2 code (that lives somewhere in this repo, but I don't know exactly on which branch anymore) is no out of date because challenge 3 and 4 optimized their logic aswell (ch3 and ch4 were started from copies of ch1 and ch2's code)
 
-- You can find all relevant information about what this package needs to achieve in `src/packages/ch4_mapping_pathfinding/docs`:
-    - `01-information.md` contains all the original information about the challenge the package needs fulfill
-    - `02-additional-information.md` contains additional information given to us including some of my initial thoughts, as well as strict requirements that need to be fulfilled. 
-    - these files are in german, but the rest of the packages primary language should be english.
-
-- the package runs in a docker container. You can find all of the docker and workflow related files in the repo root:
-    - `Dockerfile`: Docker Image definition
-    - `docker-compose.yml`: Container building
-    - `start.sh`: Container starting, networking, etc.
-    - `attach_tmux.sh`: Creating a new tmux session with 4 panes attached to the running container
-
-- Claude Fable 5 (which is more capable than you Claude Opus 4.8) already analyzed the current state and came up with a plan to complete the challenge. It generated two files in `src/packages/ch4_mapping_pathfinding/docs/`:
-    - `current_implementation-fable-analysis.md`: An analysis of what the architecture / package can already do now
-    - `plan-fable.md`: A detailed plan of the steps necessary to complete all of the requirements for this package. This is what needs to be implemented!
-
-- General instructions:
-    - Write and run offline tests whenever applicable (no robot driving required) but only on bigger changes
-    - Continuously document the state of the package in `src/packages/ch4_mapping_pathfinding/docs/current-state.md` in a structured way. Keep track of where we are in the development phase, TODOs, next steps in a well structured way.
-    - Write any new code and comments in english. You can leave the existing german code as is, only convert it to english if you actually change it.
+- In the next steps, we are going to rebuild challenges 1 and 2 from challenge 4's code.
+- challenges 1 and 2 will get their own respective package with copies / modified versions of challenge 4' nodes (only the ones necessary)
+- challenges 1 and 2 will each get their own launch file

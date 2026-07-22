@@ -1,0 +1,57 @@
+{
+    "control_lane": {
+        "pid": {
+            "p": 5.3,
+            "i": 0.0,
+            "d": 1.0,
+            "d_filter_tau": 0.08,
+            "max_vel": 0.19
+        },
+        "crossing": {
+            "v": 0.18,
+            "omega": 0.5,
+            "comment": "Blind command for the CROSSING state. omega is not a neutral zero: it is the drift compensation measured on the bot, so re-check it if the robot leaves the stop line at an angle."
+        },
+        "publish_rate": 30
+    },
+    "detect_intersection": {
+        "stop_y_threshold": 0.95
+    },
+    "detect_lane": {
+        "lane_search_y_ratio": 0.6,
+        "crossing_search_y_ratio": 0.99,
+        "target_im_size": 192,
+        "hsv_red_lower1": [
+            0,
+            100,
+            80
+        ],
+        "hsv_red_upper1": [
+            10,
+            255,
+            255
+        ],
+        "hsv_red_lower2": [
+            165,
+            100,
+            80
+        ],
+        "hsv_red_upper2": [
+            180,
+            255,
+            255
+        ],
+        "frame_skip": 1,
+        "report_timing_every": 10.0
+    },
+    "switch_control": {
+        "timers": {
+            "stop_duration": 3.0,
+            "crossing_duration": 1.2,
+            "min_clearing_duration": 0.5,
+            "max_clearing_duration": 4.0,
+            "comment": "crossing_duration is how far the robot drives blind, about 22 cm at 0.18 m/s. Long enough to clear the line, short enough that a curve right after it is still caught by the lane controller."
+        },
+        "loop_rate": 30
+    }
+}

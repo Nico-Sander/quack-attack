@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<!--
+  Challenge 1: follow the lane, stop three seconds at every red line.
+
+  Typical use:
+
+    Drive:
+      roslaunch ch1_lane_following ch1_lane_following.launch
+
+    Bring-up without motors (perception and state machine only). The state
+    machine still runs, so holding the robot over a red line by hand walks it
+    through all four states without it moving:
+      roslaunch ch1_lane_following ch1_lane_following.launch driving:=false
+
+    Check the segmentation, e.g. when the red mask is producing phantom stops:
+      roslaunch ch1_lane_following ch1_lane_following.launch \
+          driving:=false dashboard:=true
+-->
+<launch>
+
+  <!-- optenv, not env: the nodes themselves fall back to "default_robot" when
+       VEHICLE_NAME is missing, so the launch file must not be stricter than
+       they are. $(env ...) aborts the whole launch with a message that does
+       not mention the variable at all. Every node logs the name it ended up
+       with, so a wrong namespace shows up immediately in the console. -->
+  <!-- Note: no $(arg veh) in this doc string. roslaunch evaluates
+       substitutions inside doc attributes too, so referring to the arg being
+       declared is a self-reference and aborts the launch with a message that
+       blames the env var instead. -->
+  <arg name="veh" default="$(optenv VEHICLE_NAME default_robot)"
+       doc="Robot name; all topics are namespaced under it."/>
+
+  <arg name="driving" default="true"
+       doc="Set false to run perception and the state machine without moving."/>
+  <arg name="dashboard" default="false"
+       doc="Perception debug dashboard (camera and segmentation masks)."/>
+
+  <group ns="$(arg veh)">
+
+    <!-- ================= perception ================= -->
+    <node name="detect_lane_node" pkg="ch1_lane_following"
+          type="detect_lane_node.py" output="screen"/>
+
+    <node name="detect_intersection_node" pkg="ch1_lane_following"
+          type="detect_intersection_node.py" output="screen"/>
+
+    <!-- ================= decision and control ================= -->
+    <node name="switch_control_node" pkg="ch1_lane_following"
+          type="switch_control_node.py" output="screen"/>
+
+    <node name="control_lane_node" pkg="ch1_lane_following"
+          type="control_lane_node.py" output="screen" if="$(arg driving)"/>
+
+    <!-- ================= debugging ================= -->
+    <node name="dashboard_node" pkg="ch1_lane_following"
+          type="dashboard_node.py" output="screen" if="$(arg dashboard)"/>
+
+  </group>
+
+</launch>
