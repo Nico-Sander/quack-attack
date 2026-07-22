@@ -23,7 +23,7 @@ docker compose build duckierace_env # <- passed
 In a pane:
 
 ```bash
-python3 -m pytest /workspace/src/packages/mapping_pathfinding/tests -q # <-passed
+python3 -m pytest /workspace/src/packages/ch4_mapping_pathfinding/tests -q # <-passed
 python3 -c "import networkx, matplotlib, yaml, pupil_apriltags; print('deps ok')" # <-passed
 ```
 
@@ -46,7 +46,7 @@ export ROS_IP=127.0.0.1
 roscore -p 11312 &
 sleep 3
 
-roslaunch mapping_pathfinding simulate.launch \
+roslaunch ch4_mapping_pathfinding simulate.launch \
     gate_order:=7,5,6 auto_start_gate_run:=true step_time:=0.4
 ```
 
@@ -88,7 +88,7 @@ work in `current-state.md` §7 is what would fix that.
 First contact with real perception. **No motors.**
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch driving:=false
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch driving:=false
 ```
 
 Carry the bot around the track by hand, or hold tags in front of the camera.
@@ -140,7 +140,7 @@ the timing section in [`parameters.md`](parameters.md).
 Tune lane following on open road, away from intersections:
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch force_turn:=STRAIGHT
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch force_turn:=STRAIGHT
 ```
 
 | Symptom | Knob (`config/config.json` → `control_wheels`) |
@@ -166,7 +166,7 @@ Crossings are now closed loop: the arc runs until **lane markings are seen
 again**, with `turn_durations` demoted to a timeout.
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch force_turn:=RIGHT
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch force_turn:=RIGHT
 # then STRAIGHT, then LEFT
 ```
 
@@ -204,7 +204,7 @@ somewhere a lane is visible. Do not spend time perfecting it.
 Plan step 2's acceptance criterion.
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch force_turn:=LEFT
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch force_turn:=LEFT
 ```
 
 **Pass:** the bot turns left at every intersection where left exists. Logs show
@@ -223,7 +223,7 @@ The bot must only map gates that are on the street it is driving, and the test
 for that is how big the tag looks.
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch \
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
     dashboard:=true driving:=false
 ```
 
@@ -240,7 +240,7 @@ Two readings, by hand:
 If the split is wrong, sweep the threshold without editing anything:
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch \
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
     dashboard:=true driving:=false gate_min_area:=<value>
 ```
 
@@ -259,7 +259,7 @@ mapping as soon as a stop line is in sight.
 The real thing, untimed.
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch start_edge:=A,1,B,1
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,1,B,1
 ```
 
 Set `start_edge` to where the bot actually is: `A,1,B,1` means *driving from A
@@ -334,7 +334,7 @@ rosservice call $N/start_gate_run
 Or from a cold start with a known map:
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch \
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
     mission_phase:=GATE_RUN start_edge:=C,4,B,3 gate_order:=7,5,6
 ```
 

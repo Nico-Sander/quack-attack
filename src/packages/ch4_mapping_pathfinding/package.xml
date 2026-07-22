@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>mapping_pathfinding</name>
+  <name>ch4_mapping_pathfinding</name>
   <version>0.0.0</version>
-  <description>The mapping_pathfinding package</description>
+  <description>The ch4_mapping_pathfinding package</description>
 
   <maintainer email="todo@example.com">quack_attack</maintainer>
   <license>TODO</license>

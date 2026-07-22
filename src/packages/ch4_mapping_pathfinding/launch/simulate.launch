@@ -10,22 +10,22 @@
   drive the gate order once it is given.
 
     # mapping phase, gates on three streets
-    roslaunch mapping_pathfinding simulate.launch
+    roslaunch ch4_mapping_pathfinding simulate.launch
 
     # straight into a gate run
-    roslaunch mapping_pathfinding simulate.launch \
+    roslaunch ch4_mapping_pathfinding simulate.launch \
         mission_phase:=GATE_RUN gate_order:=7,5,6
 
     # map, then run the gates automatically when mapping completes
-    roslaunch mapping_pathfinding simulate.launch \
+    roslaunch ch4_mapping_pathfinding simulate.launch \
         gate_order:=7,5,6 auto_start_gate_run:=true
 -->
 <launch>
 
   <arg name="veh" default="$(optenv VEHICLE_NAME default_robot)"/>
 
-  <arg name="city_path" default="$(find mapping_pathfinding)/config/city.json"/>
-  <arg name="gates_path" default="$(find mapping_pathfinding)/config/gates.json"/>
+  <arg name="city_path" default="$(find ch4_mapping_pathfinding)/config/city.json"/>
+  <arg name="gates_path" default="$(find ch4_mapping_pathfinding)/config/gates.json"/>
 
   <arg name="mission_phase" default="MAPPING"/>
   <arg name="start_edge" default="A,1,B,1"/>
@@ -54,7 +54,7 @@
 
   <group ns="$(arg veh)">
 
-    <node name="mapping_pathplanning_node" pkg="mapping_pathfinding"
+    <node name="mapping_pathplanning_node" pkg="ch4_mapping_pathfinding"
           type="mapping_pathplanning.py" output="screen">
       <param name="city_path" value="$(arg city_path)"/>
       <param name="gates_path" value="$(arg gates_path)"/>
@@ -70,7 +70,7 @@
       <param name="gate_cooldown" value="0.0"/>
     </node>
 
-    <node name="mapping_visualization_node" pkg="mapping_pathfinding"
+    <node name="mapping_visualization_node" pkg="ch4_mapping_pathfinding"
           type="visualization.py" output="screen" if="$(arg visualization)">
       <param name="city_path" value="$(arg city_path)"/>
       <param name="gates_path" value="$(arg gates_path)"/>
@@ -80,7 +80,7 @@
          would tear down the whole launch and close the visualization window
          with it, right when there is a finished map and route worth looking
          at. Ctrl-C when you are done inspecting. -->
-    <node name="simulated_driver" pkg="mapping_pathfinding"
+    <node name="simulated_driver" pkg="ch4_mapping_pathfinding"
           type="simulate_drive.py" output="screen">
       <param name="gates" value="$(arg gates)"/>
       <param name="step_time" value="$(arg step_time)"/>

@@ -3,7 +3,7 @@
 """
 Menu-driven front end for the whole mission.
 
-    rosrun mapping_pathfinding mission_tui.py
+    rosrun ch4_mapping_pathfinding mission_tui.py
 
 Walks through the two phases in the order they actually happen: configure the
 mapping run, watch it, and when it stops at the red line, configure and start

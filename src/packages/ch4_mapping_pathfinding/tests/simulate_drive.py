@@ -19,7 +19,7 @@ IMPORTANT: do not run this while switch_control is running; both publish
 switch_control, or start the mapping node and visualization on their own.
 
 Usage:
-    rosrun mapping_pathfinding simulate_drive.py \
+    rosrun ch4_mapping_pathfinding simulate_drive.py \
         _gates:=A1__B1:5,B3__C4:6,A3__C1:7 _step_time:=0.4 _moves:=30
 """
 

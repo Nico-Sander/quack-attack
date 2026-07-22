@@ -21,7 +21,7 @@ container image, which does:
 
     docker run --rm -v "$PWD:/workspace" -w /workspace \
         --entrypoint python3 quack-attack-duckierace_env:latest \
-        src/packages/mapping_pathfinding/tests/render_example_visualization.py
+        src/packages/ch4_mapping_pathfinding/tests/render_example_visualization.py
 """
 
 import argparse

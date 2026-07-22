@@ -26,7 +26,7 @@ RUN pip3 install --no-cache-dir --ignore-installed \
     ultralytics \
     pytest
 
-# 1b. Explicit runtime dependencies of the mapping_pathfinding package.
+# 1b. Explicit runtime dependencies of the ch4_mapping_pathfinding package.
 # These used to arrive only transitively (networkx and matplotlib ride in on
 # torch/ultralytics) or had to be pip-installed by hand inside a running
 # container (pupil-apriltags). Declaring them here makes the image reproducible.

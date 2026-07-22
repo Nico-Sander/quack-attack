@@ -128,8 +128,8 @@ def test_an_unchanged_config_launches_with_no_arguments():
     """Anything left alone must visibly come from the launch file."""
     command = mission_setup.build_launch_command(mission_setup.default_config())
 
-    assert command == ["roslaunch", "mapping_pathfinding",
-                       "mapping_pathfinding.launch"]
+    assert command == ["roslaunch", "ch4_mapping_pathfinding",
+                       "ch4_mapping_pathfinding.launch"]
 
 
 def test_only_changed_values_are_passed():

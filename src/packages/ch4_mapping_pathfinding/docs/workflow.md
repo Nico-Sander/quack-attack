@@ -15,7 +15,7 @@ in what order is [`test-plan.md`](test-plan.md).
 ## The menu
 
 ```bash
-rosrun mapping_pathfinding mission_tui.py
+rosrun ch4_mapping_pathfinding mission_tui.py
 ```
 
 It walks the phases in the order they happen: configure the mapping run, watch
@@ -61,7 +61,7 @@ tail -f ~/mission_HHMMSS.log
 ### Rehearsing it without the robot
 
 ```bash
-rosrun mapping_pathfinding mission_tui.py --simulate
+rosrun ch4_mapping_pathfinding mission_tui.py --simulate
 ```
 
 Same menu, same phase switch, same commands — driven against the fake driver,
@@ -94,14 +94,14 @@ way, and each is timed from the moment the wheels first turn.
 Place the bot at an intersection exit, then:
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch start_edge:=A,1,B,1
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,1,B,1
 ```
 
 If the gate order is already known, pass it now — the bot will then recommend
 where to place it for the run:
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch \
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
     start_edge:=A,1,B,1 gate_order:=7,5,6
 ```
 
@@ -297,7 +297,7 @@ export ROS_IP=127.0.0.1
 roscore -p 11312 & sleep 3
 
 # halt_timeout gives you 90 s to type the phase-2 commands
-roslaunch mapping_pathfinding simulate.launch \
+roslaunch ch4_mapping_pathfinding simulate.launch \
     gate_order:=7,5,6 halt_timeout:=90 step_time:=0.3
 ```
 

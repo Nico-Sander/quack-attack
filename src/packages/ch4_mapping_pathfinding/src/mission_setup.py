@@ -16,8 +16,8 @@ against the city graph here, before anything is launched.
 import city_map
 
 
-LAUNCH_PACKAGE = "mapping_pathfinding"
-LAUNCH_FILE = "mapping_pathfinding.launch"
+LAUNCH_PACKAGE = "ch4_mapping_pathfinding"
+LAUNCH_FILE = "ch4_mapping_pathfinding.launch"
 SIMULATE_FILE = "simulate.launch"
 
 # simulate.launch runs the mapping node against a fake driver, so it takes only

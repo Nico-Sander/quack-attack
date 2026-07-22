@@ -1,4 +1,4 @@
-# Current State — mapping_pathfinding
+# Current State — ch4_mapping_pathfinding
 
 Living document. Reflects the package as of **2026-07-22**.
 
@@ -86,7 +86,7 @@ degrades to the previous behaviour instead of stopping the robot.
 | `src/switch_control.py` | Behaviour FSM; consumes the turn command |
 | `src/visualization.py` | Live map + path + position window |
 | `src/dashboard.py` | Perception debug window; draws tag boxes |
-| `launch/mapping_pathfinding.launch` | Everything, with args |
+| `launch/ch4_mapping_pathfinding.launch` | Everything, with args |
 | `tests/` | 216 offline tests |
 
 `src/graph_only.py` was **deleted** — a superseded prototype that carried a
@@ -239,9 +239,9 @@ is live (`test_startup_gating.py` stubs ROS, so it needs no master).
 
 ```bash
 # host
-.venv/bin/python -m pytest src/packages/mapping_pathfinding/tests -q
+.venv/bin/python -m pytest src/packages/ch4_mapping_pathfinding/tests -q
 # in the container
-python3 -m pytest /workspace/src/packages/mapping_pathfinding/tests -q
+python3 -m pytest /workspace/src/packages/ch4_mapping_pathfinding/tests -q
 ```
 
 ### ROS simulation (no robot needed)
@@ -252,7 +252,7 @@ gate detections. It exercises the real ROS layer — topics, timers, the phase
 switch — without a camera, motors or a Duckiebot.
 
 ```bash
-roslaunch mapping_pathfinding simulate.launch \
+roslaunch ch4_mapping_pathfinding simulate.launch \
     gate_order:=7,5,6 auto_start_gate_run:=true step_time:=0.4
 ```
 
@@ -306,11 +306,11 @@ cheapest way to look at a layout change.
 
 ```bash
 # host, if matplotlib/cv2/networkx are installed
-python3 src/packages/mapping_pathfinding/tests/render_example_visualization.py
+python3 src/packages/ch4_mapping_pathfinding/tests/render_example_visualization.py
 # otherwise, in the image (needs no robot and no ROS master)
 docker run --rm -v "$PWD:/workspace" -w /workspace --entrypoint python3 \
     quack-attack-duckierace_env:latest \
-    src/packages/mapping_pathfinding/tests/render_example_visualization.py
+    src/packages/ch4_mapping_pathfinding/tests/render_example_visualization.py
 ```
 
 It also surfaced a cosmetic issue worth knowing about before a demo: with every
@@ -446,7 +446,7 @@ three.
 
 Most of the time: **nothing to build.** The repo is bind-mounted at
 `/workspace`, and `devel/.catkin` points at `/workspace/src`, so
-`$(find mapping_pathfinding)` resolves to the source directory. Python files,
+`$(find ch4_mapping_pathfinding)` resolves to the source directory. Python files,
 `config/*.json` and `launch/` are therefore picked up live — edit and re-run.
 
 The workspace uses **`catkin_make`** (not `catkin build`), and `entrypoint.sh`
@@ -469,17 +469,17 @@ docker compose build duckierace_env
 
 ```bash
 # Mapping phase
-roslaunch mapping_pathfinding mapping_pathfinding.launch start_edge:=A,1,B,1
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,1,B,1
 
 # Timed gate run (order announced on site)
-roslaunch mapping_pathfinding mapping_pathfinding.launch \
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
     mission_phase:=GATE_RUN start_edge:=C,4,B,3 gate_order:=7,5,11
 
 # Perception + planning, no motors
-roslaunch mapping_pathfinding mapping_pathfinding.launch driving:=false
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch driving:=false
 
 # Check the planner -> switch_control command path
-roslaunch mapping_pathfinding mapping_pathfinding.launch force_turn:=LEFT
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch force_turn:=LEFT
 ```
 
 `start_edge:=A,1,B,1` means *driving from A port 1 towards B port 1*, so the
@@ -549,4 +549,4 @@ rostopic echo /$VEHICLE_NAME/plan/turn_command    # 0=none, 1=L, 2=S, 3=R
 
 `follow_lane` imports `tkinter` and `cv_bridge`, neither of which the Dockerfile
 installs (`python3-tk`, `ros-noetic-cv-bridge`). Not touched, since this work is
-scoped to `mapping_pathfinding` — but those nodes will fail in a clean image.
+scoped to `ch4_mapping_pathfinding` — but those nodes will fail in a clean image.

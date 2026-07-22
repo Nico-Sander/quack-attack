@@ -1,4 +1,4 @@
-# Parameter Reference — mapping_pathfinding
+# Parameter Reference — ch4_mapping_pathfinding
 
 Every knob in the package, in one place. For the race-day command sequence see
 [`workflow.md`](workflow.md).
@@ -12,7 +12,7 @@ Three kinds:
 Everything in section 1 is set like this:
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch <arg>:=<value> ...
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch <arg>:=<value> ...
 ```
 
 ---
@@ -223,7 +223,7 @@ Redo this only if the camera, the gate size or the track changes — and prefer
 a rosbag over the dashboard. Run with the dashboard:
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch dashboard:=true driving:=false
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch dashboard:=true driving:=false
 ```
 
 Every detected tag is outlined on the camera feed with its ID and area:
@@ -240,7 +240,7 @@ low is what caused the problem in the first place.
 To sweep values without editing the config:
 
 ```bash
-roslaunch mapping_pathfinding mapping_pathfinding.launch \
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
     dashboard:=true driving:=false gate_min_area:=2500
 ```
 
