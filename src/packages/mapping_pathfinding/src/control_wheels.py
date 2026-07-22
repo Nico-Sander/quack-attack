@@ -7,7 +7,7 @@ ROS node for controlling physical wheel commands based on DriveMode.
 import os
 import json
 import rospy
-from std_msgs.msg import Float64, Int32
+from std_msgs.msg import Bool, Float64, Int32
 from duckietown_msgs.msg import Twist2DStamped, FSMState
 from custom_enums import DriveMode, IntersectionPhase, TurnDirection
 
@@ -35,6 +35,21 @@ class ControlWheelsNode:
         self.v = 0.0
         self.omega = 0.0
 
+        # Nothing moves until detect_signs says it is detecting.
+        #
+        # Motion has always been gated on detect_lane implicitly -- v stays 0
+        # until the first /detect/lane message, which cannot arrive before that
+        # node has loaded its network. Gate detection had no such gate, and it
+        # is the *slower* of the two to come up (~5.5s against ~4.5s: building
+        # the tagStandard52h13 decode table alone takes five seconds). So the
+        # bot pulled away roughly a second before any tag could be detected and
+        # drove ~0.2m of its first street blind -- enough to miss a gate that
+        # was already in frame at the start, which is exactly what happened.
+        #
+        # The flag is latched, so subscribing late is safe.
+        self.wait_for_signs = bool(rospy.get_param("~wait_for_signs", True))
+        self.signs_ready = not self.wait_for_signs
+
         # Topics
         base = f"/{self._vehicle_name}"
         self.pub_cmd_vel = rospy.Publisher(f"{base}/lane_controller_node/car_cmd", Twist2DStamped, queue_size=1)
@@ -53,6 +68,9 @@ class ControlWheelsNode:
 
         self.sub_mode = rospy.Subscriber(f"{base}/switch/mode", Int32, self._cb_mode, queue_size=1)
         self.sub_turn = rospy.Subscriber(f"{base}/switch/turn_direction", Int32, self._cb_direction, queue_size=1)
+        self.sub_signs_ready = rospy.Subscriber(
+            f"{base}/detect/sign_ready", Bool, self._cb_signs_ready, queue_size=1
+        )
 
         rospy.on_shutdown(self._fn_shutdown)
 
@@ -65,6 +83,20 @@ class ControlWheelsNode:
         except (FileNotFoundError, KeyError) as e:
             rospy.logerr(f"Missing config.json parameters: {e}")
             rospy.signal_shutdown("Missing required config.")
+
+    def _cb_signs_ready(self, msg):
+        """
+        Releases the wheels once sign detection is live.
+
+        One way only: the flag says "the pipeline has come up", and a node that
+        later falls silent is a different problem. Freezing the bot mid-crossing
+        on a dropped message would be worse than driving on.
+        """
+        if not msg.data or self.signs_ready:
+            return
+
+        self.signs_ready = True
+        rospy.loginfo("Sign detection is live -- releasing the wheels")
 
     def _cb_direction(self, msg):
         try:
@@ -89,6 +121,16 @@ class ControlWheelsNode:
     def _cb_lane(self, msg):
         """Calculates PID if the current mode requires lane following."""
         error = msg.data
+
+        if not self.signs_ready:
+            # Lane messages usually start about a second before the wheels are
+            # released. Running the PID over that second would wind the
+            # integrator up and stamp last_time with a moment the bot spent
+            # standing still, so it starts from rest instead.
+            self.v, self.omega = 0.0, 0.0
+            self.integral = 0.0
+            self.last_time = None
+            return
 
         if self.active_mode in (DriveMode.STOPPED, DriveMode.CROSSING_INTERSECTION):
             self.v, self.omega = 0.0, 0.0
@@ -186,6 +228,40 @@ class ControlWheelsNode:
         rospy.loginfo("Shutting down control_wheels. Stopping robot.")
         self.pub_cmd_vel.publish(Twist2DStamped(v=0.0, omega=0.0))
 
+    def _compute_twist(self):
+        """
+        The wheel command for this tick.
+
+        Split out from run() so the startup gate below can be tested without a
+        ROS master; see tests/test_startup_gating.py.
+        """
+        twist = Twist2DStamped()
+        twist.header.stamp = rospy.Time.now()
+
+        # Before anything else, including the open-loop crossing manoeuvre: no
+        # perception, no movement. At startup the mode is LANE_FOLLOWING, so in
+        # practice this is what holds the bot at its placement until the whole
+        # pipeline is up.
+        if not self.signs_ready:
+            rospy.logwarn_throttle(
+                1.0, "Holding still: waiting for detect_signs to come up "
+                     "(set wait_for_signs:=false to drive anyway)"
+            )
+            return twist
+
+        if self.active_mode in (DriveMode.LANE_FOLLOWING, DriveMode.APPROACHING_STOP_LINE):
+            twist.v = self.v
+            twist.omega = self.omega
+
+        elif self.active_mode == DriveMode.STOPPED:
+            twist.v = 0.0
+            twist.omega = 0.0
+
+        elif self.active_mode == DriveMode.CROSSING_INTERSECTION:
+            self._execute_intersection_crossing(twist)
+
+        return twist
+
     def run(self):
         """
         Publishing loop.
@@ -200,21 +276,7 @@ class ControlWheelsNode:
         rate = rospy.Rate(self.config.get("publish_rate", 30))
 
         while not rospy.is_shutdown():
-            twist = Twist2DStamped()
-            twist.header.stamp = rospy.Time.now()
-
-            if self.active_mode in (DriveMode.LANE_FOLLOWING, DriveMode.APPROACHING_STOP_LINE):
-                twist.v = self.v
-                twist.omega = self.omega
-
-            elif self.active_mode == DriveMode.STOPPED:
-                twist.v = 0.0
-                twist.omega = 0.0
-
-            elif self.active_mode == DriveMode.CROSSING_INTERSECTION:
-                self._execute_intersection_crossing(twist)
-
-            self.pub_cmd_vel.publish(twist)
+            self.pub_cmd_vel.publish(self._compute_twist())
             rate.sleep()
             
 if __name__ == '__main__':

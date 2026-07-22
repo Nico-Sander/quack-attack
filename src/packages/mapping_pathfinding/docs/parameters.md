@@ -36,6 +36,7 @@ roslaunch mapping_pathfinding mapping_pathfinding.launch <arg>:=<value> ...
 |---|---|---|---|
 | `force_turn` | `NONE` | `NONE`, `LEFT`, `STRAIGHT`, `RIGHT` | Forces every turn, bypassing the planner. Use to verify the planner → switch_control command path end to end. |
 | `driving` | `true` | `true`/`false` | `false` leaves out `control_wheels`, so nothing moves. Perception, mapping and planning still run — good for a bench test. |
+| `wait_for_signs` | `true` | `true`/`false` | Holds the robot still until `detect_signs` reports it is detecting. **Leave this on.** `detect_signs` is the slowest node to come up — see [Startup order](#startup-order-and-why-the-bot-waits) — and without it the bot pulls away before gate detection is live. `false` only makes sense when `detect_signs` is not running at all. |
 | `visualization` | `true` | `true`/`false` | The live map/path/position window. |
 | `dashboard` | `false` | `true`/`false` | Perception debug dashboard (camera + segmentation masks). |
 
@@ -291,6 +292,60 @@ rostopic echo /$VEHICLE_NAME/plan/turn_command
 `switch_control`'s random fallback and it drives on, which is exactly what must
 *not* happen while it is waiting to be picked up.
 
+
+---
+
+## Startup order, and why the bot waits
+
+Two nodes have an expensive constructor, and **the slower one is not the one
+you would guess**. Measured in the container (2026-07-22):
+
+| Node | What it does before it can work | Cost |
+|---|---|---|
+| `detect_lane` | `import torch` (3.2 s) + load and JIT-trace the U-Net (1.2 s) | **~4.5 s** |
+| `detect_signs` | build the `tagStandard52h13` quick-decode table | **~5.1 s alone, 5.7 s under launch contention** |
+
+The AprilTag cost is not the detection — a `detect()` call on a frame is under
+a millisecond. It is the one-off decode table: 48714 codes × 52 bits with 2-bit
+error correction. It is not tunable from `pupil_apriltags`, so it is a fixed
+part of every launch.
+
+Motion has always been gated on `detect_lane` **by accident**: `control_wheels`
+leaves `v` at 0 until the first `/detect/lane` message, which cannot arrive
+before the network is loaded. Nothing gated it on `detect_signs`, so the bot
+pulled away roughly a second before gate detection was live and drove ~0.2 m of
+its first street blind. A gate already in frame at the placement could be
+passed, or shrink out of the camera's view, in that window — see
+[current-state.md](current-state.md#found-on-the-robot).
+
+So `detect_signs` now publishes a **latched** `Bool` on
+`/<veh>/detect/sign_ready`, and `control_wheels` holds every wheel command at
+zero until it arrives (`wait_for_signs`, on by default). The flag means all
+three of:
+
+1. the detector is built,
+2. a camera frame has actually been through it,
+3. something is subscribed to `/detect/sign_detections` — the mapping node
+   connects at its own pace, and a message published before that TCP connection
+   is up is dropped, not queued.
+
+Only the third implies the other two, which is why the flag waits for it. The
+release is one-way: a later dropped message must not re-freeze a bot that is
+mid-crossing.
+
+What you should see in the log, in this order:
+
+```
+detect_signs started (52h13, 13 tags, detector built in 5.7s, ...)
+Holding still: waiting for detect_signs to come up          # control_wheels
+detect_signs ready after 6.1s -- gate detection is live
+Sign detection is live -- releasing the wheels
+Run started on A1__B1 -- timing from here                    # mapping node
+```
+
+If the bot never moves, that first warning is the one to look for: it names the
+node it is waiting for. The mission clock is unaffected — it starts on the
+first non-zero wheel command, which now cannot happen too early.
 
 ---
 

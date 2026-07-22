@@ -103,6 +103,13 @@
 
   <arg name="driving" default="true"
        doc="Set false to run perception, mapping and planning without moving."/>
+  <arg name="wait_for_signs" default="true"
+       doc="Hold the robot still until detect_signs reports it is detecting.
+            It is the slowest node to come up -- building the 52h13 decode
+            table takes ~5s, longer than detect_lane needs -- so without this
+            the bot pulls away before gate detection is live and can miss a
+            gate that was already in frame at the start. Set false only to
+            drive without detect_signs running at all."/>
   <arg name="visualization" default="true"
        doc="Live map/path/position window."/>
   <arg name="dashboard" default="false"
@@ -130,7 +137,9 @@
     </node>
 
     <node name="control_wheels_node" pkg="mapping_pathfinding"
-          type="control_wheels.py" output="screen" if="$(arg driving)"/>
+          type="control_wheels.py" output="screen" if="$(arg driving)">
+      <param name="wait_for_signs" value="$(arg wait_for_signs)"/>
+    </node>
 
     <!-- ================= mapping and planning ================= -->
     <node name="mapping_pathplanning_node" pkg="mapping_pathfinding"

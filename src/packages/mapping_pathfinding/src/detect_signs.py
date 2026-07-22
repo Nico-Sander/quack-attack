@@ -2,12 +2,13 @@
 
 import json
 import os
+import time
 import yaml
 import rospy
 import cv2
 import numpy as np
 from pupil_apriltags import Detector
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Bool, Int32, String
 from sensor_msgs.msg import CompressedImage
 
 import gate_detection
@@ -19,6 +20,11 @@ CONFIG_PATH = os.path.join(
 
 class DetectIntersectionSignNode:
     def __init__(self):
+        # Before anything else: what this stamps is how long the bot has to
+        # stand still waiting for this node, so it has to include the detector
+        # build rather than start after it.
+        self._started_at = time.time()
+
         rospy.init_node("detect_intersection_sign_node")
 
         vehicle = os.environ.get("VEHICLE_NAME", "duckiebot")
@@ -37,6 +43,12 @@ class DetectIntersectionSignNode:
             "~detections_topic", "/{}/detect/sign_detections".format(vehicle)
         )
 
+        # "This node is now producing detections." control_wheels holds the
+        # robot still until it sees this; see the ready flag below.
+        self.ready_topic = rospy.get_param(
+            "~ready_topic", "/{}/detect/sign_ready".format(vehicle)
+        )
+
         # Minimum detected area for a tag to count as being on the street the
         # bot is on rather than somewhere across an intersection. Only the
         # `accepted` flag is derived from it here -- what to do with a rejected
@@ -47,7 +59,17 @@ class DetectIntersectionSignNode:
         self.last_seen = {}
 
         self.sign_db = self.load_db(self.sign_db_path)
+
+        # Timed and reported, because it is the slowest thing in the launch and
+        # the whole run waits on it: building the quick-decode table for
+        # tagStandard52h13 (48714 codes, 2-bit error correction) takes about
+        # five seconds, which is *longer* than detect_lane needs to load and
+        # trace its network. Nothing about that is obvious from the outside, and
+        # it used to mean the bot drove the first stretch of its first street
+        # with no gate detection running at all.
+        load_started = time.time()
         self.detector_52h13 = Detector(families="tagStandard52h13")
+        self.detector_load_seconds = time.time() - load_started
 
         self.pub = rospy.Publisher(self.output_topic, Int32, queue_size=1)
 
@@ -57,6 +79,13 @@ class DetectIntersectionSignNode:
         self.pub_detections = rospy.Publisher(
             self.detections_topic, String, queue_size=1
         )
+
+        # Latched, so a consumer that connects later still gets it rather than
+        # waiting forever for a message that was sent once, before it existed.
+        self.pub_ready = rospy.Publisher(
+            self.ready_topic, Bool, queue_size=1, latch=True
+        )
+        self.ready = False
 
         # Buffer to hold the most recently received image
         self.latest_image = None
@@ -68,10 +97,10 @@ class DetectIntersectionSignNode:
             queue_size=1,
             buff_size=2**24
         )
-        rospy.loginfo("detect_signs started (52h13, %d tags, min gate area "
-                      "%.0f px): %s -> %s",
-                      len(self.sign_db), self.gate_min_area,
-                      self.image_topic, self.output_topic)
+        rospy.loginfo("detect_signs started (52h13, %d tags, detector built in "
+                      "%.1fs, min gate area %.0f px): %s -> %s",
+                      len(self.sign_db), self.detector_load_seconds,
+                      self.gate_min_area, self.image_topic, self.output_topic)
 
     def _load_gate_min_area(self):
         """
@@ -144,6 +173,38 @@ class DetectIntersectionSignNode:
             "detections": detections,
         })))
 
+    def _announce_ready(self):
+        """
+        Says "gates can be detected now", once and latched.
+
+        Deliberately not sent when the detector finishes building. Three things
+        have to be true before a gate in front of the camera would actually be
+        recorded, and only the last of them implies the other two:
+
+          1. the detector exists,
+          2. a frame has been through it, so the camera feed really is arriving,
+          3. someone is connected to the detections topic -- the mapping node
+             subscribes at its own pace, and a message published before that
+             TCP connection is up is dropped, not queued.
+
+        Called once per processed frame; returns immediately after the first
+        time it fires.
+        """
+        if self.ready:
+            return
+
+        if self.pub_detections.get_num_connections() < 1:
+            rospy.logwarn_throttle(
+                2.0, "Detections are ready but nothing is subscribed to %s yet; "
+                     "holding the ready flag back", self.detections_topic
+            )
+            return
+
+        self.ready = True
+        self.pub_ready.publish(Bool(data=True))
+        rospy.loginfo("detect_signs ready after %.1fs -- gate detection is live",
+                      time.time() - self._started_at)
+
     def run(self):
         """Main control loop running at 10 Hz."""
         rate = rospy.Rate(10)
@@ -162,6 +223,7 @@ class DetectIntersectionSignNode:
                                   for det in self.detector_52h13.detect(gray)]
 
                     self._publish_detections(detections, now)
+                    self._announce_ready()
 
                     # /detect/sign carries the closest tag only, unthresholded:
                     # switch_control reads intersection signs from it and must

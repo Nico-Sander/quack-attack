@@ -1,6 +1,6 @@
 # Current State — mapping_pathfinding
 
-Living document. Reflects the package as of **2026-07-21**.
+Living document. Reflects the package as of **2026-07-22**.
 
 Related: **[`test-plan.md`](test-plan.md) — what to run on the robot, in order**,
 **[`parameters.md`](parameters.md) — every launch arg and config knob in one
@@ -22,10 +22,10 @@ place**, [`plan-fable.md`](plan-fable.md) (the work plan being executed),
 | 6. Gate order and colours | **Done** | Order = announced tag IDs; colours cosmetic |
 | 7. Path visualization + robustness | **Mostly done** | Path drawn; resync beyond "flag and stand down" still open |
 
-**209 tests pass.** Steps 0-5 of [`test-plan.md`](test-plan.md) are done on the
+**216 tests pass.** Steps 0-5 of [`test-plan.md`](test-plan.md) are done on the
 robot: **lane following, intersection driving and the full mapping run all
 work**, with every gate mapped to the right street. What is left is the timed
-gate run. Track testing has found three bugs the offline tests could not (see
+gate run. Track testing has found four bugs the offline tests could not (see
 *Found on the robot* below).
 
 **[`workflow.md`](workflow.md) is the race-day command sequence.**
@@ -40,7 +40,8 @@ used to only observe:
 ```
 camera ─┬─► detect_lane.py ──► /detect/lane, /detect/lane_borders
         └─► detect_signs.py ─┬─► /detect/sign            (closest tag ID)
-                             └─► /detect/sign_detections (all tags + area)
+                             ├─► /detect/sign_detections (all tags + area)
+                             └─► /detect/sign_ready      (latched startup gate)
 
 /detect/lane_borders ──► detect_intersection.py ──► /detect/intersection
 
@@ -86,7 +87,7 @@ degrades to the previous behaviour instead of stopping the robot.
 | `src/visualization.py` | Live map + path + position window |
 | `src/dashboard.py` | Perception debug window; draws tag boxes |
 | `launch/mapping_pathfinding.launch` | Everything, with args |
-| `tests/` | 209 offline tests |
+| `tests/` | 216 offline tests |
 
 `src/graph_only.py` was **deleted** — a superseded prototype that carried a
 third copy of the city dict. It is in git history if ever needed.
@@ -157,6 +158,16 @@ and the tag was never caught, the gate is credited anyway on reaching the red
 line. Without it a single missed detection would leave a gate pending forever
 and the run would never report a result — worse than crediting one street late.
 
+**Nothing moves until perception is up, and that is stated rather than
+implied.** `control_wheels` holds every wheel command at zero until
+`detect_signs` publishes a latched ready flag. The bot was already waiting for
+`detect_lane` — `v` stays 0 until the first lane message — but only as a side
+effect of how the PID is written, and no such side effect covered
+`detect_signs`, which is the *slower* of the two to construct. One accidental
+gate and one missing gate is exactly the asymmetry that lost a gate on the
+track (§4). Making the wait explicit costs the ~1 s the two constructors differ
+by, at the start of an untimed placement.
+
 **The route is replanned after every crossing.** Cheap on this graph, and it
 means a corrected position immediately produces a corrected route.
 
@@ -222,8 +233,9 @@ Test coverage: port geometry and the no-U-turn invariant, city validation,
 `GraphMap` moves/gates/coverage, gate-sighting filters (size, confirmation
 streak, drive mode, and the never-overwrite lock), planner reachability from
 every start state, **all 6 gate orderings from all 10 start states**, greedy
-coverage from every start state, full mission simulations, and 2×2/3×3/4×5 grid
-cities.
+coverage from every start state, full mission simulations, 2×2/3×3/4×5 grid
+cities, and the startup gate that keeps the wheels still until `detect_signs`
+is live (`test_startup_gating.py` stubs ROS, so it needs no master).
 
 ```bash
 # host
@@ -379,6 +391,39 @@ and the street the bot was on, so the two distributions can actually be
 compared: worst wrong-street sighting 501 px², first right-street acceptance
 1426 px². A threshold picked by eye landed at the top of that gap instead of
 the middle of it. Record a bag for every run.
+
+**The bot drove off before gate detection was running.** A mapping run started
+with a gate already in frame on the first street, and that gate was never
+recorded.
+
+The cause is a race between two node startups that nothing was synchronising.
+Both constructors are expensive, and the slower one is not the obvious one
+(measured in the container):
+
+| Node | Before it can work | Cost |
+|---|---|---|
+| `detect_lane` | `import torch` + load and trace the U-Net | ~4.5 s |
+| `detect_signs` | build the `tagStandard52h13` decode table | ~5.1 s, 5.7 s under launch contention |
+
+Motion was gated on `detect_lane` **by accident** — `control_wheels` leaves `v`
+at 0 until the first `/detect/lane` message, which cannot arrive before the
+network is loaded — and on `detect_signs` not at all. So the bot pulled away
+about a second before any tag could be detected and drove ~0.2 m at 0.19 m/s
+with gate mapping dead. A gate near the start of the street is either passed or
+rises out of the downward-tilted camera's view in that window.
+
+Nothing about the *logic* was wrong, which is why every offline test passed: the
+bug lives entirely in when two processes finish their constructors. It is also
+not deterministic — it is whichever of two multi-second initialisations wins,
+so it would come and go with CPU load.
+
+`detect_signs` now publishes a latched ready flag and `control_wheels` holds
+every wheel command at zero until it arrives; see
+[parameters.md](parameters.md#startup-order-and-why-the-bot-waits) for what the
+flag means and what the log looks like. The mission clock is unaffected — it
+already started on the first non-zero wheel command, which now cannot come too
+early. Pinned by `tests/test_startup_gating.py`, which stubs ROS and asserts the
+wheels stay at zero without the flag.
 
 **Gate detection worked too well.** Approaching or stopped at an intersection,
 the bot picked up a gate tag from a street beyond it and overwrote the gate it

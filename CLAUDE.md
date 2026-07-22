@@ -18,6 +18,6 @@
     - `plan-fable.md`: A detailed plan of the steps necessary to complete all of the requirements for this package. This is what needs to be implemented!
 
 - General instructions:
-    - Write and run offline tests whenever applicable (no robot driving required)
+    - Write and run offline tests whenever applicable (no robot driving required) but only on bigger changes
     - Continuously document the state of the package in `src/packages/mapping_pathfinding/docs/current-state.md` in a structured way. Keep track of where we are in the development phase, TODOs, next steps in a well structured way.
     - Write any new code and comments in english. You can leave the existing german code as is, only convert it to english if you actually change it.
