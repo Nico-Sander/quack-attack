@@ -9,3 +9,7 @@ __pycache__/
 *.bkp
 data/
 
+# Recorded runs and their exported event logs
+*.bag
+*.jsonl
+
