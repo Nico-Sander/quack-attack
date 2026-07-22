@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<!--
+  Challenge 2: read the intersection sign, stop at the red line, turn.
+
+  Typical use:
+
+    Drive:
+      roslaunch ch2_intersection_handling ch2_intersection_handling.launch
+
+    Bring-up without motors (perception and state machine only). The state
+    machine still runs, so holding the robot in front of a sign and then over
+    a red line by hand walks it through the whole cycle without it moving:
+      roslaunch ch2_intersection_handling ch2_intersection_handling.launch \
+          driving:=false
+
+    Tune the turn manoeuvre without hunting for the right intersection:
+      roslaunch ch2_intersection_handling ch2_intersection_handling.launch \
+          force_turn:=LEFT
+
+    Check the segmentation and which tag is being read:
+      roslaunch ch2_intersection_handling ch2_intersection_handling.launch \
+          driving:=false dashboard:=true
+-->
+<launch>
+
+  <!-- optenv, not env: the nodes themselves fall back to "default_robot" when
+       VEHICLE_NAME is missing, so the launch file must not be stricter than
+       they are. $(env ...) aborts the whole launch with a message that does
+       not mention the variable at all. Every node logs the name it ended up
+       with, so a wrong namespace shows up immediately in the console. -->
+  <!-- Note: no $(arg veh) in this doc string. roslaunch evaluates
+       substitutions inside doc attributes too, so referring to the arg being
+       declared is a self-reference and aborts the launch with a message that
+       blames the env var instead. -->
+  <arg name="veh" default="$(optenv VEHICLE_NAME default_robot)"
+       doc="Robot name; all topics are namespaced under it."/>
+
+  <arg name="driving" default="true"
+       doc="Set false to run perception and the state machine without moving."/>
+
+  <arg name="wait_for_signs" default="true"
+       doc="Hold the robot still until detect_signs reports it is detecting.
+            It is the slowest node to come up -- building the 52h13 decode
+            table takes ~5s, longer than detect_lane needs -- so without this
+            the robot pulls away before sign detection is live and can miss a
+            sign that was already in frame at the start. Set false only to
+            drive without detect_signs running at all."/>
+
+  <arg name="sign_cooldown" default="0.1"
+       doc="Seconds before the same tag ID is published again."/>
+
+  <arg name="force_turn" default="NONE"
+       doc="LEFT/STRAIGHT/RIGHT forces every turn and ignores the sign. Used
+            to check the manoeuvre end to end and to tune turn_durations
+            without having to find the right kind of intersection."/>
+
+  <arg name="dashboard" default="false"
+       doc="Perception debug dashboard (camera, segmentation masks, tags)."/>
+
+  <group ns="$(arg veh)">
+
+    <!-- ================= perception ================= -->
+    <node name="detect_lane_node" pkg="ch2_intersection_handling"
+          type="detect_lane_node.py" output="screen"/>
+
+    <node name="detect_signs_node" pkg="ch2_intersection_handling"
+          type="detect_signs_node.py" output="screen">
+      <param name="cooldown" value="$(arg sign_cooldown)"/>
+    </node>
+
+    <node name="detect_intersection_node" pkg="ch2_intersection_handling"
+          type="detect_intersection_node.py" output="screen"/>
+
+    <!-- ================= decision and control ================= -->
+    <node name="switch_control_node" pkg="ch2_intersection_handling"
+          type="switch_control_node.py" output="screen">
+      <param name="force_turn" value="$(arg force_turn)"/>
+    </node>
+
+    <node name="control_wheels_node" pkg="ch2_intersection_handling"
+          type="control_wheels_node.py" output="screen" if="$(arg driving)">
+      <param name="wait_for_signs" value="$(arg wait_for_signs)"/>
+    </node>
+
+    <!-- ================= debugging ================= -->
+    <node name="dashboard_node" pkg="ch2_intersection_handling"
+          type="dashboard_node.py" output="screen" if="$(arg dashboard)"/>
+
+  </group>
+
+</launch>

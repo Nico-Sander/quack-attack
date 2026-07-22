@@ -1,0 +1,59 @@
+
+
+- tag_id: 1
+  tag_type: TrafficSign
+  street_name:
+  vehicle_name:
+  traffic_sign_type: 4-way-intersect
+
+- tag_id: 2
+  tag_type: TrafficSign
+  street_name:
+  vehicle_name:
+  traffic_sign_type: T-intersection
+
+- tag_id: 3
+  tag_type: TrafficSign
+  street_name:
+  vehicle_name:
+  traffic_sign_type: left-T-intersect
+
+- tag_id: 4
+  tag_type: TrafficSign
+  street_name:
+  vehicle_name:
+  traffic_sign_type: right-T-intersect
+
+# Gates (challenge 4). Listed only so a detection logs as a gate rather than
+# "unknown". Colours are deliberately NOT repeated here -- config/gates.json is
+# the single source of truth for those.
+#
+# Gates deliberately carry no traffic_sign_type: switch_control reads that field
+# to decide turns, so a gate must never look like an intersection hint.
+
+- tag_id: 5
+  tag_type: Gate
+
+- tag_id: 6
+  tag_type: Gate
+
+- tag_id: 7
+  tag_type: Gate
+
+- tag_id: 8
+  tag_type: Gate
+
+- tag_id: 9
+  tag_type: Gate
+
+- tag_id: 10
+  tag_type: Gate
+
+- tag_id: 11
+  tag_type: Gate
+
+- tag_id: 12
+  tag_type: Gate
+
+- tag_id: 13
+  tag_type: Gate

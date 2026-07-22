@@ -1,0 +1,86 @@
+{
+    "control_wheels": {
+        "pid": {
+            "p": 5.3,
+            "p_slow": 5.3,
+            "i": 0.0,
+            "d": 1.0,
+            "d_slow": 0.8,
+            "d_filter_tau": 0.08,
+            "max_vel": 0.19
+        },
+        "approach_speed_multiplier": 0.7,
+        "intersection": {
+            "straight_before_turn": {
+                "v": 0.2,
+                "omega": 0.3
+            },
+            "durations": {
+                "LEFT": 0.6,
+                "RIGHT": 0.46,
+                "STRAIGHT": 0.0,
+                "comment": "How long to roll straight into the intersection before the turn starts. Straight ahead needs none of it."
+            },
+            "initial_turn": {
+                "LEFT": {
+                    "v": 0.2,
+                    "omega": 2.22
+                },
+                "RIGHT": {
+                    "v": 0.23,
+                    "omega": -3.6
+                },
+                "STRAIGHT": {
+                    "v": 0.18,
+                    "omega": 0.5
+                }
+            }
+        },
+        "publish_rate": 30
+    },
+    "detect_intersection": {
+        "stop_y_threshold": 0.95
+    },
+    "detect_lane": {
+        "lane_search_y_ratio": 0.6,
+        "crossing_search_y_ratio": 0.99,
+        "target_im_size": 192,
+        "hsv_red_lower1": [
+            0,
+            100,
+            80
+        ],
+        "hsv_red_upper1": [
+            10,
+            255,
+            255
+        ],
+        "hsv_red_lower2": [
+            165,
+            100,
+            80
+        ],
+        "hsv_red_upper2": [
+            180,
+            255,
+            255
+        ],
+        "frame_skip": 1,
+        "report_timing_every": 10.0
+    },
+    "switch_control": {
+        "exit_confidence_mode": "both",
+        "timers": {
+            "stop_duration": 3.0,
+            "min_blind_duration": 1.2,
+            "red_line_ignore_duration": 2.2,
+            "turn_durations": {
+                "LEFT": 2.5,
+                "RIGHT": 1.4,
+                "STRAIGHT": 2.5,
+                "comment": "Timeouts, not the length of the turn. The crossing normally ends earlier, as soon as both lane lines are visible again."
+            }
+        },
+        "loop_rate": 30
+    }
+}
