@@ -66,8 +66,7 @@ class ControlLaneNode:
         base_topic = f"/{self._vehicle_name}"
 
         self.pub_cmd_vel = rospy.Publisher(
-            f"{base_topic}/lane_controller_node/car_cmd",
-            Twist2DStamped, queue_size=1
+            f"{base_topic}/lane_controller_node/car_cmd", Twist2DStamped, queue_size=1
         )
         self.pub_fsm = rospy.Publisher(
             f"{base_topic}/fsm_node/mode", FSMState, queue_size=1, latch=True
@@ -80,10 +79,12 @@ class ControlLaneNode:
         fsm_msg.state = "LANE_FOLLOWING"
         self.pub_fsm.publish(fsm_msg)
 
-        rospy.loginfo("control_lane ready: %d Hz, max %.2f m/s, "
-                      "Duckiebot FSM forced to LANE_FOLLOWING",
-                      self.config.get("publish_rate", 30),
-                      self.config["pid"]["max_vel"])
+        rospy.loginfo(
+            "control_lane ready: %d Hz, max %.2f m/s, "
+            "Duckiebot FSM forced to LANE_FOLLOWING",
+            self.config.get("publish_rate", 30),
+            self.config["pid"]["max_vel"],
+        )
 
         self.sub_lane = rospy.Subscriber(
             f"{base_topic}/detect/lane", Float64, self._cb_lane, queue_size=1
@@ -96,9 +97,7 @@ class ControlLaneNode:
 
     def _load_config(self):
         """Reads the control_lane section of the package config."""
-        config_path = os.path.join(
-            os.path.dirname(__file__), "../config/config.json"
-        )
+        config_path = os.path.join(os.path.dirname(__file__), "../config/config.json")
 
         try:
             with open(config_path, "r") as config_file:
@@ -194,8 +193,7 @@ class ControlLaneNode:
         twist = Twist2DStamped()
         twist.header.stamp = rospy.Time.now()
 
-        if self.active_mode in (DriveMode.LANE_FOLLOWING,
-                                DriveMode.CROSSING_CLEARING):
+        if self.active_mode in (DriveMode.LANE_FOLLOWING, DriveMode.CROSSING_CLEARING):
             twist.v = self.v
             twist.omega = self.omega
 

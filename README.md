@@ -3,11 +3,13 @@
 This repository contains the ROS Noetic workspace for the DuckieRace challenge. We use Docker to containerize the environment, ensuring consistent dependencies and a quick setup across all machines.
 
 ## Prerequisites
-- [Docker](https://docs.docker.com/get-docker/)
-- [Docker Compose](https://docs.docker.com/compose/install/)
-- `tmux` (Optional, but highly recommended for multi-pane terminal workflow)
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose plugin
+- `avahi-daemon` (mDNS, so `<vehicle>.local` resolves on the host)
+- `nmap` (fallback used by `start.sh` when mDNS fails)
+- `tmux` (optional, but recommended for the multi-pane workflow)
 
-### Docker Install Guide for Ubuntu (tested on 24.04)
+<details>
+<summary>Docker install guide for Ubuntu (tested on 24.04)</summary>
 
 **Step 1: Clean up any old installations or leftovers**:
 
@@ -41,12 +43,12 @@ for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker c
     ```
 
 **Step 3: Install Docker Engine and Docker Compose**
-    
+
 ```shell
 sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 ```
 
-Verifiy installation:
+Verify the installation:
 
 ```shell
 docker --version
@@ -55,155 +57,174 @@ docker compose version
 
 **Step 4: Remove the need for running docker commands with sudo**
 
-1. Create the docker group
+```shell
+sudo groupadd docker
+sudo usermod -aG docker $USER
+newgrp docker
+```
 
-    ```shell
-    sudo groupadd docker
-    ```
-
-2. Add your user to the group
-
-    ```shell
-    sudo usermod -aG docker $USER
-    ```
-
-3. Apply new group membership
-
-    ```shell
-    newgrp docker
-    ```
+</details>
 
 ---
 
-## Initial Setup Instructions
+## Initial Setup
 
-You only need to do this once when setting up the project on a new machine or when the `Dockerfile` has changed.
-
-### 1. Clone the repository
-
-Clone the project directly to your host machine:
+Only needed once per machine (or after the `Dockerfile` changes).
 
 ```shell
-git clone [https://github.com/Nico-Sander/quack-attack.git](https://github.com/Nico-Sander/quack-attack.git)
+git clone https://github.com/Nico-Sander/quack-attack.git
 cd quack-attack
-```
-
-### 2. Build the Docker Image
-Compile the custom ROS Noetic image (which includes all tools needed for running the rosnodes used in this project). This is rarely necessary unless system-level dependencies in the `Dockerfile` are changed
-
-```bash
+cp .env.example .env      # values are overwritten by start.sh at every run
 docker compose build
 ```
 
-
 ## Daily Workflow
 
-Think of the container as a lightweigth, pre-configured virtual machine. You "turn it on" in the background, and then you "attach" terminals to it to do your work.
-
-### 1. Grant Display Permissions (Required for GUI tools)
-
-Before starting the container, allow it to draw windows (like RViz or rqt) on your host machine's screen.
+### 1. Grant display permissions (required for RViz, rqt, dashboards)
 
 ```shell
 xhost +local:root
 ```
 
-If you don't want to run this step after each restart of your system, consider putting this command into your `.bashrc` file.
+Put this in your `.bashrc` if you don't want to repeat it after every reboot.
 
-### 2. Start the Container
-
-Set the name of the Duckiebot you want to control in `./start.sh`, then run the automated startup script:
+### 2. Start the container
 
 ```shell
-./start.sh
+./start.sh <vehicle_name>     # e.g. ./start.sh trick   (default: track)
 ```
 
-This script handles the heavy-lifting automatically:
-- Verifies connection to the DuckieNetz Wi-Fi network (and attempts auto-connection if needed)
-- Scans the network to dynamically locate the Duckiebot's and the Host's IP adresses.
-- Injects the correct hostname mappings into your /etc/hosts file to allow seamless ROS peer-to-peer communication.
-- Boots the duckie_ros container in the background
+`start.sh` does the whole network setup for you:
+- verifies you are on the `DuckieNetz` Wi-Fi (offers to connect if not)
+- resolves the Duckiebot's IP via mDNS (`avahi-resolve`), falling back to an `nmap` subnet scan
+- removes stale `/etc/hosts` pins that would shadow mDNS
+- determines the host IP and exports `DUCKIEBOT_IP`, `HOST_IP`, `VEHICLE_NAME`, `HOST_UID`, `HOST_GID`
+- starts the `duckie_ros` container in the background (`network_mode: host`, running as your user so files stay writable)
 
-### 3. Attach to the Workspace
+The container's `entrypoint.sh` runs `catkin_make` on startup and sources `devel/setup.bash`, so a fresh clone is ready to use. A failing build does **not** kill the container — you still get a shell to debug in.
 
-Once the container is running, plug a terminal session into it. Choose the method that fits your workflow:
+### 3. Attach a terminal
 
-**Option A: The Tmux Multi-Pane Setup** (Recommended)
+**Option A — tmux, 4 panes (recommended):**
 
 ```shell
 ./attach_tmux.sh
 ```
 
-This script automatically generates a background tmux session, splits your terminal into 4 distinct panes, and attaches all of them to the running duckie_ros container simultaneously. Perfect for running multiple ROS nodes at once.
-
-**Option B: The Standard Single Terminal**
+**Option B — single shell (repeat in as many tabs as you need):**
 
 ```shell
 docker exec -it duckie_ros bash
 ```
-Use this to open a single, standard bash terminal inside the running container. You can run this command in as many new terminal tabs as you need.
 
-### 4. Build and Run ROS Nodes
+### 4. Build and run
 
-Once inside the container, you are in a standard Ubuntu ROS Noetic environment. The entrypoint.sh script automatically sources the /opt/ros/noetic/setup.bash and your local workspace overlays. Your code from your host machine is automatically synced here via volumes.
-
-Build the project and source the workspace:
+Inside the container (`/workspace` is this repo, bind-mounted):
 
 ```shell
-catkin_make
+catkin_make              # only needed after changes; entrypoint already built once
 source devel/setup.bash
 ```
 
-Run a single node:
+Run a whole challenge stack:
 
 ```shell
-rosrun <package_name> <node_name>.py
-rosrun follow_lane detect_lane.py
+roslaunch ch1_lane_following ch1_lane_following.launch
 ```
 
-Run a launch script for multiple nodes
+Or a single node:
 
 ```shell
-launchers/<launch_script_name>.sh
-launchers/follow_lane.sh
+rosrun ch1_lane_following detect_lane_node.py
 ```
 
-### 5. Stop the Container
+### 5. Stop the container
 
 ```shell
 docker compose down
 ```
 
-## Common / Useful Docker Commands
+## Useful Docker Commands
 
-- `docker compose up -d`: Starts the container in the background. (Networking configuration will not be correct, and Duckiebot will not be reachable)
-- `docker exec -it duckie_ros bash`: Opens an interactive bash terminal inside the running container.
-- `docker compose down`: Stops and removes the running container safely.
-- `docker compose restart`: Quickly restarts the container. Useful if you changed variables in your `.env` file and need them to apply.
-- `docker compose logs -f`: Streams the backgroung logs of the container. Press `CTRL+C` to exit the log view.
-- `docker compose build --no-cache`: Forces a complete rebuild of the Docker image from scratch. Use this only if you update the `Dockerfile` with new system-level dependencies.
+- `docker compose up -d` — start in the background **without** the network setup (Duckiebot will not be reachable; prefer `./start.sh`)
+- `docker exec -it duckie_ros bash` — open an interactive shell in the running container
+- `docker compose down` — stop and remove the container
+- `docker compose restart` — restart (re-runs the entrypoint build)
+- `docker compose logs -f` — stream container logs
+- `docker compose build --no-cache` — full image rebuild, only after `Dockerfile` changes
 
-## Code Structure
+---
 
-This repository is formed as a Catkin workspace. The code is separated into packages.
+## Packages
 
-- `src/packages/follow_lane/src`: Contains the actual code for the DuckieRace challenge.
-- `src/packages/duckietown_msgs`: Contains custom message definitions required for communicating with the nodes running directly on the Duckiebot.
+Catkin workspace under `src/packages/`. Every challenge is a self-contained package with its own nodes, config, model and launch file — challenges 2–4 build on the previous ones, but do not import from them.
+
+| Package | Challenge | Launch |
+| --- | --- | --- |
+| `ch1_lane_following` | Lane following, stop at red lines | `roslaunch ch1_lane_following ch1_lane_following.launch` |
+| `ch2_intersection_handling` | Read the intersection sign, stop, turn | `roslaunch ch2_intersection_handling ch2_intersection_handling.launch` |
+| `ch3_obstacle_avoidance` | Reactive duckie avoidance (follow-the-gap) | `roslaunch ch3_obstacle_avoidance ch3_obstacle_avoidance.launch` |
+| `ch4_mapping_pathfinding` | City mapping and timed gate run | `roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch` |
+| `duckietown_msgs` | Message/service definitions used to talk to the nodes on the bot | — |
+
+All nodes of ch1, ch2 and ch4 are namespaced under `VEHICLE_NAME` (override with `veh:=<name>`). ch3 runs un-namespaced.
+
+### Common launch arguments
+
+Every launch file documents its arguments inline; list them with `roslaunch --ros-args <pkg> <file>.launch`. The ones you use most:
+
+```shell
+# perception + state machine only, robot does not move
+roslaunch ch1_lane_following ch1_lane_following.launch driving:=false
+
+# camera/segmentation debug dashboard (needs X11)
+roslaunch ch2_intersection_handling ch2_intersection_handling.launch dashboard:=true
+
+# force every turn, to tune the manoeuvre without hunting for the right intersection
+roslaunch ch2_intersection_handling ch2_intersection_handling.launch force_turn:=LEFT
+
+# ch3: dry run — controller still plans and feeds the dashboard, but publishes no command
+roslaunch ch3_obstacle_avoidance ch3_obstacle_avoidance.launch controller:=false
+```
+
+### Challenge 4 specifics
+
+```shell
+# mapping phase: explore every street, recording gates
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,4,D,2
+
+# timed gate run, order announced on site as tag IDs
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
+    mission_phase:=GATE_RUN start_edge:=C,4,F,2 gate_order:=7,5,11
+
+# full mission without the robot: mapping node + fake driver, needs only a roscore
+roslaunch ch4_mapping_pathfinding simulate.launch
+```
+
+A menu-driven front end walks through both phases in one long-lived launch (the map would be lost by restarting):
+
+```shell
+rosrun ch4_mapping_pathfinding mission_tui.py
+```
+
+See `src/packages/ch4_mapping_pathfinding/docs/workflow.md` for the manual equivalent.
 
 ### Machine Learning Model Training
-The neural network models used by the `follow_lane` nodes in this repository are trained separately. If you need to adjust the dataset, retrain the model, or view the training pipeline, please visit our standalone ML training repository:
+
+The lane-segmentation networks (`models/*.pth`) are trained in a separate repository:
 
 **[duckie-lane-segmentation](https://github.com/Nico-Sander/duckie-lane-segmentation)**
 
-## Important Notes on using the duckiebot
-- Webinterface is accessible via: http://trick not http://trick.local
+---
 
-### Power on duckiebot
-- Press the button on the battery and wait for the duckiebot to boot up.
-- Check the status of the duckiebot by running `dts fleet discover` on the host machine
+## Notes on Using the Duckiebot
 
-### Powering off the duckiebot
-1. Preferred: Use the webinterface 
-2. Press and hold the top button for ~20 seconds, then release.
+- The web interface is at `http://<vehicle>` — not `http://<vehicle>.local`.
 
-**!IMPORTANT!** Do not remove any cables while the duckiebot is on, since this can cause curruption of the duckiebot's OS
+**Power on:** press the button on the battery and wait for it to boot. Check with `dts fleet discover` on the host.
+
+**Power off:**
+1. Preferred: use the web interface.
+2. Otherwise press and hold the top button for ~20 seconds, then release.
+
+**!IMPORTANT!** Never remove cables while the Duckiebot is on — this can corrupt its OS.

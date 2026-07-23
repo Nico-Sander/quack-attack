@@ -14,9 +14,7 @@ Living document. Reflects the package as of **2026-07-23**.
 
 Related: **[`test-plan.md`](test-plan.md) — what to run on the robot, in order**,
 **[`parameters.md`](parameters.md) — every launch arg and config knob in one
-place**, [`plan-fable.md`](plan-fable.md) (the work plan being executed),
-[`current_implementation-fable-analysis.md`](current_implementation-fable-analysis.md)
-(architecture analysis of the state *before* this work — now partly outdated).
+place**, **[`workflow.md`](workflow.md) — the race-day command sequence**.
 
 ---
 
@@ -348,8 +346,8 @@ rather than trusting the numbers.
 window with no roscore, no camera and no Duckiebot. It stubs `rospy`, then
 drives the real `GraphMap` through a real exploration and plans the gate run
 with the real planner, so the picture is the actual renderer against an actual
-plan — only ROS is faked. Used for the figure in `docs/latex/`, and it is the
-cheapest way to look at a layout change.
+plan — only ROS is faked. Used for the report figure, and it is the cheapest
+way to look at a layout change.
 
 ```bash
 # host, if matplotlib/cv2/networkx are installed

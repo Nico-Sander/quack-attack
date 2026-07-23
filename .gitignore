@@ -1,15 +1,30 @@
-build/*
-devel/*
+# Catkin workspace build output
+build/
+devel/
 .catkin_workspace
+.catkin_tools/
+
+# Python
 __pycache__/
+*.py[cod]
 .pytest_cache/
 .venv/
+
+# Local environment and editor state
 .env
 .vscode/
 *.bkp
-data/
 
-# Recorded runs and their exported event logs
+# Datasets and recorded runs with their exported event logs
+data/
 *.bag
 *.jsonl
 
+# Superseded notes: kept locally, deliberately not on the remote.
+# All of these describe code or a workflow that no longer exists.
+docs/lane_following/
+docs/detect_obstacle/
+docs/tuning_lane_following_pid.md
+src/packages/ch3_obstacle_avoidance/docs/PARAMETER_MIGRATION.md
+src/packages/ch4_mapping_pathfinding/docs/plan-fable.md
+src/packages/ch4_mapping_pathfinding/docs/current_implementation-fable-analysis.md

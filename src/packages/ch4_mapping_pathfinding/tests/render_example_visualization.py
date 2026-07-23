@@ -14,7 +14,7 @@ exploration, plans the gate run with the real planner, and hands the resulting
 stubbed out, because the node reaches for rospy in its constructor and there is
 no master to talk to.
 
-    python3 tests/render_example_visualization.py [-o docs/latex/img/visualization.png]
+    python3 tests/render_example_visualization.py [-o docs/visualization.png]
 
 Needs matplotlib, cv2 and networkx. If the host has none of them, run it in the
 container image, which does:
@@ -204,7 +204,7 @@ def main():
     parser.add_argument(
         "-o", "--out",
         default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "..", "docs", "latex", "img", "visualization.png"),
+                             "..", "docs", "visualization.png"),
         help="where to write the PNG",
     )
     parser.add_argument(

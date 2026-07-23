@@ -41,7 +41,6 @@ ch3_obstacle_avoidance/
 │   └── DEBUGGING.md                  # Hinweise für Tests und typische Fehlerbilder
 ├── models/
 │   ├── YOLOv11_duckie_detection_modell.pt
-│   ├── lane_segmentation.pth
 │   └── lane_segmentation_002_model.pth
 └── src/
     ├── control_lane_node.py          # Lane-Following + Duckie-Ausweichlogik
