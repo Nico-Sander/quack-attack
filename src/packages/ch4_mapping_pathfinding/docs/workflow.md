@@ -80,8 +80,8 @@ The rest of this document. This is what the menu runs.
 **The bot always starts at an intersection exit**, pointed along the street it
 is about to drive. It never starts mid-street.
 
-`start_edge:=A,1,B,1` means: *placed at A's port 1 exit, driving towards B's
-port 1.* So `B` is the next intersection, and the whole of street `A1__B1` is
+`start_edge:=A,4,D,2` means: *placed at A's port 4 exit, driving towards D's
+port 2.* So `D` is the next intersection, and the whole of street `A4__D2` is
 driven — which is what makes its measured time meaningful.
 
 This holds for **both** phases. The mapping run and the gate run each start this
@@ -94,7 +94,7 @@ way, and each is timed from the moment the wheels first turn.
 Place the bot at an intersection exit, then:
 
 ```bash
-roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,1,B,1
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,4,D,2
 ```
 
 If the gate order is already known, pass it now — the bot will then recommend
@@ -102,7 +102,7 @@ where to place it for the run:
 
 ```bash
 roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
-    start_edge:=A,1,B,1 gate_order:=7,5,6
+    start_edge:=A,4,D,2 gate_order:=7,5,6
 ```
 
 The bot drives every street at least once, records which gate is on which

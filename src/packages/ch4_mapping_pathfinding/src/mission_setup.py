@@ -83,16 +83,16 @@ def legal_start_edges(city):
 
 def parse_start_edge(text, city):
     """
-    Parses "A,1,B,1" and checks it is a street the city actually has.
+    Parses "A,4,D,2" and checks it is a street the city actually has.
 
-    Returns the normalised "A,1,B,1" string. Raises SetupError with something
+    Returns the normalised "A,4,D,2" string. Raises SetupError with something
     actionable rather than letting a bad placement reach the robot.
     """
     parts = [part.strip() for part in _normalise(text).split(",") if part.strip()]
 
     if len(parts) != 4:
         raise SetupError(
-            f"Expected 4 comma-separated values like A,1,B,1 "
+            f"Expected 4 comma-separated values like A,4,D,2 "
             f"(from,port,to,port), got {text!r}"
         )
 
@@ -189,9 +189,17 @@ def unknown_gates(order, gate_config):
 # ---------------------------------------------------------------------------
 
 def default_config():
-    """The answers a plain mapping run would give."""
+    """
+    The answers a plain mapping run would give.
+
+    `start_edge` must stay in sync with the launch files' own default and must
+    be a street the city has. build_launch_command() drops any answer equal to
+    a default, so a placement typed into the menu that happens to match this
+    value is never passed on -- and roslaunch then falls back to whatever its
+    own default says. If the two ever disagree, that gap is silent.
+    """
     return {
-        "start_edge": "A,1,B,1",
+        "start_edge": "A,4,D,2",
         "gate_order": "",
         "driving": True,
         "visualization": True,

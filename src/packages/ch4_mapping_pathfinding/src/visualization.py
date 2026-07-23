@@ -38,6 +38,16 @@ UNVISITED_COLOUR = "#BBBBBB"
 ROUTE_COLOUR = "#3D5AFE"
 NEXT_NODE_COLOUR = "#FFD400"
 
+# Where the info box and the legend sit, in axes fractions: the bottom-left and
+# bottom-right corners.
+INFO_BOX_XY = (0.02, 0.02)
+LEGEND_XY = (0.98, 0.02)
+
+# Clearance kept between the bottom boxes and the lowest thing on the map, in
+# axes fractions. A street label is anchored at its centre and is up to five
+# lines tall, so this has to cover half a label rather than just a hairline.
+BOX_CLEARANCE = 0.07
+
 
 class MappingVisualizationNode:
     def __init__(self):
@@ -253,6 +263,10 @@ class MappingVisualizationNode:
         phase = mission.get("phase", "?")
         ax.set_title(f"Duckiebot Mapping Graph  --  {phase}", fontsize=16)
 
+        # Anchors of everything the info box must not land on top of. Filled in
+        # as the streets are drawn, then used to choose the box's corner.
+        label_points = []
+
         nx.draw_networkx_nodes(self.G, self.pos, node_size=1800,
                                node_color="#4C9BE8", edgecolors="black",
                                linewidths=2, ax=ax)
@@ -323,6 +337,7 @@ class MappingVisualizationNode:
                 label += "\n" + ", ".join(marks)
 
             label_pos = self._bezier_point(self.pos[u], self.pos[v], 0.5, rad)
+            label_points.append(label_pos)
             ax.text(label_pos[0], label_pos[1], label, fontsize=9,
                     ha="center", va="center", zorder=5,
                     bbox=dict(boxstyle="round,pad=0.35", fc="white",
@@ -367,8 +382,9 @@ class MappingVisualizationNode:
                        s=2600, facecolors="none", edgecolors=NEXT_NODE_COLOUR,
                        linewidths=4, zorder=6)
 
-        self._draw_info_box(ax, state, graph_state, plan_state, mission)
-        self._draw_legend(ax)
+        info_box = self._draw_info_box(ax, state, graph_state, plan_state,
+                                       mission)
+        legend = self._draw_legend(ax)
 
         ax.axis("off")
 
@@ -379,6 +395,12 @@ class MappingVisualizationNode:
 
         plt.tight_layout()
         fig.canvas.draw()
+
+        # Only meaningful once the limits are set and the figure has been laid
+        # out: before that, data coordinates do not map to the final canvas.
+        if self._reserve_space_for_boxes(fig, ax, (info_box, legend),
+                                         list(self.pos.values()) + label_points):
+            fig.canvas.draw()
 
         width, height = fig.canvas.get_width_height()
         image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
@@ -449,14 +471,66 @@ class MappingVisualizationNode:
         if mission.get("localization_ok") is False:
             lines.append("!! LOCALIZATION LOST !!")
 
-        ax.text(0.02, 0.02, "\n".join(lines), transform=ax.transAxes,
-                fontsize=9, va="bottom", ha="left", zorder=10, family="monospace",
-                bbox=dict(boxstyle="round,pad=0.45", fc="white", ec="black",
-                          alpha=0.92))
+        # Returned rather than dropped: _reserve_space_for_boxes() has to
+        # measure it once the figure has been laid out.
+        return ax.text(
+            *INFO_BOX_XY, "\n".join(lines), transform=ax.transAxes,
+            fontsize=9, va="bottom", ha="left", zorder=10, family="monospace",
+            bbox=dict(boxstyle="round,pad=0.45", fc="white", ec="black",
+                      alpha=0.92),
+        )
+
+    def _reserve_space_for_boxes(self, fig, ax, boxes, feature_points):
+        """
+        Grows the y range downwards until the bottom boxes clear the map.
+
+        The info box and the legend are opaque and pinned to the bottom
+        corners, so anything under them is simply not on the picture. That was
+        free on the 3-node practice track, where the bottom of the canvas was
+        empty; the challenge city fills the canvas and the info box lands on an
+        intersection. Moving the box to another corner does not help -- it is
+        about a third of the canvas tall, so every corner is occupied.
+
+        So the space is made instead of hunted for: the axes keep the same
+        drawing, extended far enough below the lowest node or street label that
+        the boxes sit in blank space. Returns True when the limits changed, in
+        which case the caller has to draw again.
+
+        `feature_points` are data coordinates: node centres and label anchors.
+        """
+        if not feature_points:
+            return False
+
+        renderer = fig.canvas.get_renderer()
+        to_axes = ax.transAxes.inverted()
+
+        # How far up the canvas the boxes reach, as an axes fraction.
+        box_top = 0.0
+        for box in boxes:
+            extent = box.get_window_extent(renderer)
+            box_top = max(box_top, to_axes.transform(extent.get_points())[1][1])
+
+        needed = box_top + BOX_CLEARANCE
+
+        lowest = min(
+            to_axes.transform(ax.transData.transform(point))[1]
+            for point in feature_points
+        )
+
+        if lowest >= needed or needed >= 1.0:
+            return False
+
+        # Solve for the lower limit that puts the lowest feature at `needed`:
+        # (y - low) / (high - low) == needed.
+        low, high = ax.get_ylim()
+        lowest_data = low + lowest * (high - low)
+        ax.set_ylim((lowest_data - needed * high) / (1.0 - needed), high)
+
+        return True
 
     def _draw_legend(self, ax):
-        ax.text(
-            0.98, 0.02,
+        return ax.text(
+            *LEGEND_XY,
             "Red halo = current street\n"
             "Green  = already driven\n"
             "Gray   = not driven yet\n"

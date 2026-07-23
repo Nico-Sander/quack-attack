@@ -28,7 +28,9 @@
   <arg name="gates_path" default="$(find ch4_mapping_pathfinding)/config/gates.json"/>
 
   <arg name="mission_phase" default="MAPPING"/>
-  <arg name="start_edge" default="A,1,B,1"/>
+  <!-- Keep in sync with ch4_mapping_pathfinding.launch and
+       mission_setup.default_config(); see the doc string there. -->
+  <arg name="start_edge" default="A,4,D,2"/>
   <arg name="gate_order" default=""/>
   <arg name="gate_run_start_edge" default=""/>
   <arg name="strict_gate_order" default="false"/>
@@ -37,13 +39,16 @@
 
   <arg name="visualization" default="true"/>
 
-  <!-- Which street carries which gate tag, as edge_key:tag pairs. Defaults to
-       the layout used by the offline mission tests. -->
-  <arg name="gates" default="A1__B1:5,B3__C4:6,A3__C1:7"/>
+  <!-- Which street carries which gate tag, as edge_key:tag pairs. Three
+       streets spread across the challenge city, one of them on the doubled
+       A-B pair so the simulation exercises telling those two apart. -->
+  <arg name="gates" default="A1__B3:5,C2__G2:6,E4__H2:7"/>
   <arg name="step_time" default="0.4"
        doc="Seconds per drive-mode state. Lower runs faster."/>
-  <arg name="moves" default="30"
-       doc="Maximum simulated intersections before giving up."/>
+  <arg name="moves" default="45"
+       doc="Maximum simulated intersections before giving up. Mapping the
+            challenge city greedily takes ~16 moves, so this leaves room for
+            a gate run afterwards."/>
   <arg name="obey_planner" default="true"
        doc="false makes the fake driver turn at random, to check the mapping
             node copes with turns it did not ask for."/>

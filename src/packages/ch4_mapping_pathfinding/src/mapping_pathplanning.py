@@ -90,7 +90,7 @@ class MappingPathplanningNode:
                       len(city_map.all_edge_keys(self.city)))
 
         start_edge = self._parse_edge(
-            rospy.get_param("~start_edge", ["A", 1, "B", 1])
+            rospy.get_param("~start_edge", ["A", 4, "D", 2])
         )
         self.gate_run_start_edge = rospy.get_param("~gate_run_start_edge", "")
 

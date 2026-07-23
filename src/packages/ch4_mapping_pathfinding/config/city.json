@@ -1,42 +1,89 @@
 {
-  "name": "challenge-4-example-city",
+  "name": "challenge-4-city",
   "description": [
-    "The city the physical test track represents (docs/challenge-4-graph.png).",
-    "Transcribed from the 'Beispiel' dictionary in docs/01-information.md.",
+    "The city handed out for the challenge run, and the default map. The small",
+    "practice track lives in config/city_practice.json. Transcribed from",
+    "config/challenge_graph_as_received.txt, which had three typos corrected here:",
+    "C port 3 was written '3,(B,1)', D's block ended with '.' instead of ',',",
+    "and I port 3 was written '(F:4)'. All three readings are confirmed by the",
+    "symmetry requirement -- every connection in this file has a matching",
+    "counterpart, which load_city() re-checks on startup.",
     "",
-    "Nodes are intersections, edges are streets. A is the 4-way intersection,",
-    "B and C are T-junctions. An edge may carry at most one gate; because a gate",
-    "tag spans the whole street, it is direction-independent.",
+    "9 intersections, 15 streets. A and B are joined twice (A1-B3 and A2-B2),",
+    "so the pair carries two distinct streets and therefore possibly two gates.",
     "",
     "Port convention (docs/02-additional-information.md): ports 1-4 are arranged",
     "cyclically around an intersection, so 1 and 3 are opposite each other and 2",
     "is always to the right of 1. A port that is absent has no street attached.",
     "",
     "'nodes' maps node -> port -> [neighbour_node, neighbour_port] and must be",
-    "symmetric: if A port 1 leads to B port 1, then B port 1 leads back to A",
-    "port 1. load_city() validates this on startup."
+    "symmetric: if A port 1 leads to B port 3, then B port 3 leads back to A",
+    "port 1.",
+    "",
+    "The layout reads ports as compass directions (1 = N, 2 = W, 3 = S, 4 = E),",
+    "which 10 of the 15 streets agree on; the remaining five (A2-B2, C2-G2,",
+    "D4-H3, F4-I3, H1-I4) are streets that curve, so they are drawn as the",
+    "diagonals and offsets they end up as. The result is crossing-free."
   ],
   "nodes": {
     "A": {
-      "1": ["B", 1],
-      "2": ["C", 2],
-      "3": ["C", 1],
-      "4": ["B", 2]
+      "1": ["B", 3],
+      "2": ["B", 2],
+      "4": ["D", 2]
     },
     "B": {
-      "1": ["A", 1],
-      "2": ["A", 4],
-      "3": ["C", 4]
+      "1": ["C", 3],
+      "2": ["A", 2],
+      "3": ["A", 1],
+      "4": ["E", 2]
     },
     "C": {
-      "1": ["A", 3],
-      "2": ["A", 2],
-      "4": ["B", 3]
+      "2": ["G", 2],
+      "3": ["B", 1],
+      "4": ["F", 2]
+    },
+    "D": {
+      "1": ["E", 3],
+      "2": ["A", 4],
+      "4": ["H", 3]
+    },
+    "E": {
+      "1": ["F", 3],
+      "2": ["B", 4],
+      "3": ["D", 1],
+      "4": ["H", 2]
+    },
+    "F": {
+      "1": ["G", 3],
+      "2": ["C", 4],
+      "3": ["E", 1],
+      "4": ["I", 3]
+    },
+    "G": {
+      "2": ["C", 2],
+      "3": ["F", 1],
+      "4": ["I", 2]
+    },
+    "H": {
+      "1": ["I", 4],
+      "2": ["E", 4],
+      "3": ["D", 4]
+    },
+    "I": {
+      "2": ["G", 4],
+      "3": ["F", 4],
+      "4": ["H", 1]
     }
   },
   "layout": {
-    "A": [4.0, 0.0],
-    "B": [4.0, -4.0],
-    "C": [0.0, 0.0]
+    "A": [0.0, 6.0],
+    "B": [3.0, 6.0],
+    "C": [6.0, 6.0],
+    "D": [0.0, 3.0],
+    "E": [3.0, 3.0],
+    "F": [6.0, 3.0],
+    "G": [9.0, 3.0],
+    "H": [3.0, 0.0],
+    "I": [6.0, 0.0]
   }
 }

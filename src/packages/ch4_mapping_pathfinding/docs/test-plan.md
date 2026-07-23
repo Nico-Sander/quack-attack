@@ -259,19 +259,21 @@ mapping as soon as a stop line is in sight.
 The real thing, untimed.
 
 ```bash
-roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,1,B,1
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,4,D,2
 ```
 
-Set `start_edge` to where the bot actually is: `A,1,B,1` means *driving from A
-port 1 towards B port 1*, so B is the next intersection.
+Set `start_edge` to where the bot actually is: `A,4,D,2` means *driving from A
+port 4 towards D port 2*, so D is the next intersection.
 
-Place the bot **at the exit of A port 1**, not part-way down the street — the
+Place the bot **at the exit of A port 4**, not part-way down the street — the
 street has to be driven in full for its time to mean anything.
 
-**Pass:** all 5 streets turn green in the visualization, each showing a
+**Pass:** all 15 streets turn green in the visualization, each showing a
 measured time in seconds; every gate appears on the street it is physically on;
 the `MAPPING COMPLETE` summary block in the log; and the bot **stops at the red
-line and stays there**. Expect ~5 crossings from `A,1,B,1`.
+line and stays there**. Expect ~16 crossings from `A,4,D,2` on the challenge
+city (~5 on the practice track, from `A,1,B,1` with
+`city_path:=…/config/city_practice.json`).
 
 Check the measured times against a stopwatch on one street. They should also be
 plausible relative to each other — a street twice as long should read roughly
@@ -335,7 +337,7 @@ Or from a cold start with a known map:
 
 ```bash
 roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
-    mission_phase:=GATE_RUN start_edge:=C,4,B,3 gate_order:=7,5,6
+    mission_phase:=GATE_RUN start_edge:=C,4,F,2 gate_order:=7,5,6
 ```
 
 **Pass:** the bot drives off along its street (it must **not** perform a turn
