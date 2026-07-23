@@ -82,7 +82,7 @@
     "switch_control": {
         "exit_confidence_mode": "both",
         "timers": {
-            "stop_duration": 3.0,
+            "stop_duration": 1.0,
             "min_blind_duration": 1.2,
             "red_line_ignore_duration": 2.2,
             "turn_durations": {
