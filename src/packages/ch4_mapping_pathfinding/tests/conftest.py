@@ -22,10 +22,16 @@ if SRC_DIR not in sys.path:
 import city_map  # noqa: E402  (needs the sys.path tweak above)
 
 
+# The suite is written against the small practice track (docs/challenge-4-
+# graph.png): 3 nodes, 5 streets, every case hand-checkable. config/city.json is
+# now the challenge city, so the fixtures name the practice file explicitly.
+PRACTICE_CITY_PATH = os.path.join(CONFIG_DIR, "city_practice.json")
+
+
 @pytest.fixture(scope="session")
 def city():
-    """The real test track (docs/challenge-4-graph.png)."""
-    loaded, _layout = city_map.load_city(os.path.join(CONFIG_DIR, "city.json"))
+    """The practice track (docs/challenge-4-graph.png)."""
+    loaded, _layout = city_map.load_city(PRACTICE_CITY_PATH)
     return loaded
 
 

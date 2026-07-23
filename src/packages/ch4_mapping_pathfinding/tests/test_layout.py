@@ -11,6 +11,7 @@ import math
 
 import pytest
 
+import conftest
 import city_map
 import graph_layout as gl
 
@@ -37,7 +38,9 @@ def build_drawing_inputs(city, layout):
 
 @pytest.fixture
 def drawing(city):
-    _c, layout = city_map.load_city(city_map.DEFAULT_CITY_PATH)
+    # Same file the `city` fixture comes from: the layout has to belong to the
+    # graph it positions, or every lookup here is a KeyError.
+    _c, layout = city_map.load_city(conftest.PRACTICE_CITY_PATH)
     return build_drawing_inputs(city, layout)
 
 

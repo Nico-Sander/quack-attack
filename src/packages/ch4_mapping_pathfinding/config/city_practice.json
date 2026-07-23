@@ -1,7 +1,10 @@
 {
-  "name": "challenge-4-example-city",
+  "name": "challenge-4-practice-city",
   "description": [
-    "The city the physical test track represents (docs/challenge-4-graph.png).",
+    "The small practice track (docs/challenge-4-graph.png), which everything",
+    "was developed and tested against. NOT the default map any more -- that is",
+    "config/city.json, the city handed out for the challenge. The offline test",
+    "suite still runs against this file; pass city_path to drive it.",
     "Transcribed from the 'Beispiel' dictionary in docs/01-information.md.",
     "",
     "Nodes are intersections, edges are streets. A is the 4-way intersection,",

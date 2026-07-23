@@ -33,6 +33,12 @@ import types
 SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
 sys.path.insert(0, os.path.abspath(SRC))
 
+# The figure shows the practice track, not the challenge city: the small map
+# fits on a page and its gates and route can be followed by eye.
+PRACTICE_CITY_PATH = os.path.abspath(
+    os.path.join(SRC, "..", "config", "city_practice.json")
+)
+
 
 def install_ros_stubs(params):
     """
@@ -88,7 +94,7 @@ def build_example_state():
     import gate_detection  # noqa: F401  (imported by visualization; fail early)
     import planner
 
-    city, _layout = city_map.load_city()
+    city, _layout = city_map.load_city(PRACTICE_CITY_PATH)
     gate_config = city_map.load_gate_config()
 
     config_path = os.path.join(SRC, "..", "config", "config.json")
@@ -209,7 +215,13 @@ def main():
     args = parser.parse_args()
     out = os.path.abspath(args.out)
 
-    install_ros_stubs({"~headless": True, "~snapshot_path": out})
+    install_ros_stubs({
+        "~headless": True,
+        "~snapshot_path": out,
+        # The node would otherwise load config/city.json (the challenge city)
+        # and try to draw a practice-track state onto it.
+        "~city_path": PRACTICE_CITY_PATH,
+    })
 
     state = build_example_state()
 

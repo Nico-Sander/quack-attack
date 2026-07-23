@@ -24,7 +24,7 @@ roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch <arg>:=<value> 
 | Arg | Default | Values | What it does |
 |---|---|---|---|
 | `mission_phase` | `MAPPING` | `MAPPING`, `GATE_RUN` | Which half of the challenge to run. `MAPPING` explores every street; `GATE_RUN` drives the announced order. |
-| `start_edge` | `A,1,B,1` | `from,port,to,port` | Where the bot is placed — **always at an intersection exit**. `A,1,B,1` = placed at A port 1, driving towards B port 1, so **B is the next intersection** and street `A1__B1` is driven in full. |
+| `start_edge` | `A,4,D,2` | `from,port,to,port` | Where the bot is placed — **always at an intersection exit**. `A,4,D,2` = placed at A port 4, driving towards D port 2, so **D is the next intersection** and street `A4__D2` is driven in full. Must be a street the loaded city has, or the mapping node refuses to start. Changing this default means changing it in `mission_setup.default_config()` too — see the note there. |
 | `gate_order` | *(empty)* | e.g. `7,5,11` | Gate tag IDs in the order announced on site. Can also be set after mapping, with `rosparam` — see [`workflow.md`](workflow.md). Passing it at launch makes the bot recommend a start position when mapping ends. |
 | `gate_run_start_edge` | *(empty)* | `from,port,to,port` | Where the bot was placed for the gate run. Setting it also means "I moved it", so it drives off along the street instead of crossing. Empty = carry on from where mapping stopped. |
 | `strict_gate_order` | `false` | `true`/`false` | See [the open question](#strict_gate_order--the-open-question) below. |
@@ -65,7 +65,7 @@ why they exist.
 | Arg | Default | What it does |
 |---|---|---|
 | `veh` | `$(env VEHICLE_NAME)` | Robot name; all topics live under `/<veh>`. |
-| `city_path` | `config/city.json` | The map. Point this at another file to run a different city. |
+| `city_path` | `config/city.json` | The map — the **challenge city** (9 intersections, 15 streets). Point this at `config/city_practice.json` for the small practice track, or at any other city file. |
 | `gates_path` | `config/gates.json` | Gate tag ID → colour mapping. |
 
 ---
@@ -77,8 +77,15 @@ why they exist.
 **The single source of truth.** Both the mapping node and the visualization read
 it; changing the city means editing this file and nothing else.
 
+It currently holds the **challenge city**: 9 intersections (`A`–`I`), 15
+streets, transcribed from `config/challenge_graph_as_received.txt`. Note that
+**A and B are joined by two separate streets** (`A1__B3` and `A2__B2`), so that
+pair can carry two gates and a placement on it has to name the right one.
+The old 3-node practice track lives on as `config/city_practice.json` and is
+what the offline test suite runs against.
+
 - `nodes`: `node → port → [neighbour, neighbour_port]`. Must be symmetric — if
-  A port 1 leads to B port 1, then B port 1 must lead back to A port 1.
+  A port 1 leads to B port 3, then B port 3 must lead back to A port 1.
   Validated on startup; a mistake raises rather than misbehaving quietly.
 - `layout`: optional `{node: [x, y]}` drawing hint. Without it the
   visualization falls back to a spring layout.

@@ -380,7 +380,7 @@ def configure_mapping(city, gate_config, simulate=False):
 
     print(bold("  Placement"))
     note("The bot starts at an intersection EXIT, facing along the street.")
-    note("Format: from,port,to,port   e.g.  A,1,B,1   (menu option 2 lists them)")
+    note("Format: from,port,to,port   e.g.  A,4,D,2   (menu option 2 lists them)")
     config["start_edge"] = ask(
         "start_edge",
         config["start_edge"],

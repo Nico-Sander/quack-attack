@@ -1,6 +1,12 @@
 # Current State — ch4_mapping_pathfinding
 
-Living document. Reflects the package as of **2026-07-22**.
+Living document. Reflects the package as of **2026-07-23**.
+
+> **Challenge city loaded 2026-07-23:** `config/city.json` is now the 9-node
+> city handed out for the challenge, and the 3-node practice track moved to
+> `config/city_practice.json`. The default `start_edge` changed with it, from
+> `A,1,B,1` (which does not exist in the new city) to `A,4,D,2`. Section 4 has
+> both maps.
 
 > **Renamed 2026-07-22:** the package was `mapping_pathfinding` and its launch
 > file `mapping_pathfinding.launch`. Both now carry the `ch4_` prefix, matching
@@ -18,7 +24,7 @@ place**, [`plan-fable.md`](plan-fable.md) (the work plan being executed),
 
 | Plan step | Status | Note |
 |---|---|---|
-| 1. Single source of truth for the map | **Done** | `config/city.json`, loaded by every node |
+| 1. Single source of truth for the map | **Done** | `config/city.json` — the challenge city — loaded by every node |
 | 2. Planner commands turns | **Done** | `/plan/turn_command`, untested on the robot |
 | 3. Two mission phases | **Done** | `MAPPING` / `GATE_RUN` / `DONE` |
 | 4. Systematic exploration | **Done** | Greedy nearest-unvisited-street |
@@ -75,7 +81,9 @@ degrades to the previous behaviour instead of stopping the robot.
 
 | File | Role |
 |---|---|
-| `config/city.json` | **The map.** Nodes, ports, layout hints |
+| `config/city.json` | **The map.** Nodes, ports, layout hints — the challenge city, 9 nodes / 15 streets |
+| `config/city_practice.json` | The small practice track, 3 nodes / 5 streets. What the offline tests run against |
+| `config/challenge_graph_as_received.txt` | The challenge map as handed out (informal dict notation), source of `city.json` |
 | `config/gates.json` | Gate tag ID → colour (cosmetic) |
 | `config/config.json` | Timings; also the planner's cost model |
 | `src/city_map.py` | ROS-free: port geometry, loading/validation, `GraphMap` |
@@ -157,6 +165,14 @@ Two different questions get two different answers, on purpose:
 
 The two diverging mid-street is normal, and the info box shows both.
 
+**The info box and legend never cover the map.** They are opaque and pinned to
+the bottom corners, which was free on the practice track but sat on top of an
+intersection once the 9-node city was loaded — and a hidden node is not a
+cosmetic problem, it is a missing part of the map. `_reserve_space_for_boxes()`
+measures both boxes after layout and extends the y range downwards until they
+clear the lowest node or street label. Moving the box to another corner does
+not work: it is about a third of the canvas tall, so every corner is occupied.
+
 The fallback matters as much as the rule: if the street is driven end to end
 and the tag was never caught, the gate is credited anyway on reaching the red
 line. Without it a single missed detection would leave a gate pending forever
@@ -211,10 +227,37 @@ built. Colours (`config/gates.json`) are for logs and display only.
 
 ## 4. Verified behaviour (offline)
 
-The real track (`config/city.json`) is 3 nodes / 5 streets: **A** is the 4-way,
-**B** and **C** are T-junctions. All 10 `(node, entry_port)` states are
-reachable and all 5 streets drivable without a U-turn — there are no dead ends,
-so the planner can never strand the bot.
+### The challenge city (`config/city.json`) — the default since 2026-07-23
+
+Transcribed from `config/challenge_graph_as_received.txt`: **9 nodes / 15
+streets**. **B**, **E** and **F** are 4-ways, the rest are T-junctions; **A and
+B are joined by two separate streets** (`A1__B3` and `A2__B2`), so that pair can
+carry two gates and a placement on it must name the right one. All 30
+`(node, entry_port)` states are reachable and all 15 streets drivable without a
+U-turn — no dead ends. The layout draws crossing-free with 1.4x the default
+curvature and keeps labels 0.9 apart.
+
+Three typos in the file as received were corrected: `3,(B,1)` → `3:(B,1)` at C,
+a `.` instead of `,` after D's block, and `(F:4)` → `(F,4)` at I. Each reading
+is forced by the symmetry check, which `load_city()` re-runs on startup.
+
+Greedy mapping from the default placement `A,4,D,2` — **16 moves** for 15
+streets, the cheapest of all 30 placements (worst is 21, none fails):
+
+```
+turns : S S S S R R L R R L L R R L L R
+route : D4__H3 -> H1__I4 -> G4__I2 -> C2__G2 -> B1__C3 -> A2__B2 -> A1__B3 ->
+        B4__E2 -> D1__E3 -> D4__H3 -> E4__H2 -> E1__F3 -> F4__I3 -> G4__I2 ->
+        F1__G3 -> C4__F2
+```
+
+### The practice track (`config/city_practice.json`)
+
+3 nodes / 5 streets: **A** is the 4-way, **B** and **C** are T-junctions. All 10
+`(node, entry_port)` states reachable, all 5 streets drivable without a U-turn.
+**The offline suite runs against this file** (`conftest.PRACTICE_CITY_PATH`), so
+the hand-checkable cases below still hold. Drive it with
+`city_path:=$(find ch4_mapping_pathfinding)/config/city_practice.json start_edge:=A,1,B,1`.
 
 Mapping from `A,1,B,1`:
 
@@ -473,11 +516,16 @@ docker compose build duckierace_env
 
 ```bash
 # Mapping phase
-roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,1,B,1
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch start_edge:=A,4,D,2
 
 # Timed gate run (order announced on site)
 roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
-    mission_phase:=GATE_RUN start_edge:=C,4,B,3 gate_order:=7,5,11
+    mission_phase:=GATE_RUN start_edge:=C,4,F,2 gate_order:=7,5,11
+
+# The old practice track instead of the challenge city
+roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch \
+    city_path:=$(rospack find ch4_mapping_pathfinding)/config/city_practice.json \
+    start_edge:=A,1,B,1
 
 # Perception + planning, no motors
 roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch driving:=false
@@ -486,8 +534,9 @@ roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch driving:=false
 roslaunch ch4_mapping_pathfinding ch4_mapping_pathfinding.launch force_turn:=LEFT
 ```
 
-`start_edge:=A,1,B,1` means *driving from A port 1 towards B port 1*, so the
-next intersection is B.
+`start_edge:=A,4,D,2` means *driving from A port 4 towards D port 2*, so the
+next intersection is D. It must name a street the loaded city actually has, or
+the mapping node refuses to start.
 
 Switch phases at runtime:
 
